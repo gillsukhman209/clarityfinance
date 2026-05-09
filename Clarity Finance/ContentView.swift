@@ -1,80 +1,152 @@
-//
-//  ContentView.swift
-//  Clarity Finance
-//
-//  Created by Sukhman Singh on 5/8/26.
-//
-
 import SwiftUI
-import SwiftData
 
 struct ContentView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Query private var items: [Item]
+    @Environment(\.scenePhase) private var scenePhase
+
+    @Bindable var store: FinanceStore
+    @State private var selectedSection: AppSection = .overview
 
     var body: some View {
-        NavigationViewWrapper {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))")
-                    } label: {
-                        Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
-                    }
-                }
-                .onDelete(perform: deleteItems)
-            }
+        Group {
 #if os(macOS)
-            .navigationSplitViewColumnWidth(min: 180, ideal: 200)
+            MacRootView(store: store, selectedSection: $selectedSection)
+#else
+            MobileRootView(store: store, selectedSection: $selectedSection)
 #endif
-            .toolbar {
-#if os(iOS)
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
-#endif
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
-                    }
-                }
-            }
         }
-    }
-
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(timestamp: Date())
-            modelContext.insert(newItem)
-        }
-    }
-
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            for index in offsets {
-                modelContext.delete(items[index])
-            }
+        .clarityBackground()
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase == .active else { return }
+            Task { await store.importCompletedHostedLinkWhenAppReturns() }
         }
     }
 }
 
-fileprivate struct NavigationViewWrapper<Content: View>: View {
-    let content: () -> Content
+private struct MobileRootView: View {
+    @Bindable var store: FinanceStore
+    @Binding var selectedSection: AppSection
 
     var body: some View {
-#if os(macOS)
-        NavigationSplitView {
-            content()
-        } detail: {
-            Text("Select an item")
+        ZStack(alignment: .bottom) {
+            screen
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            MobileTabBar(selectedSection: $selectedSection)
         }
-#else
-        content()
+    }
+
+    @ViewBuilder
+    private var screen: some View {
+        switch selectedSection {
+        case .overview:
+            OverviewView(store: store) { selectedSection = $0 }
+        case .accounts:
+            AccountsView(store: store)
+        case .transactions:
+            TransactionsView(store: store)
+        case .budget:
+            BudgetView(store: store)
+        case .subscriptions:
+            SubscriptionsView(store: store)
+        case .netWorth:
+            NetWorthView(store: store)
+        case .settings:
+            SettingsView(store: store)
+        }
+    }
+}
+
+#if os(macOS)
+private struct MacRootView: View {
+    @Bindable var store: FinanceStore
+    @Binding var selectedSection: AppSection
+
+    var body: some View {
+        NavigationSplitView {
+            List(AppSection.allCases, selection: $selectedSection) { section in
+                Label(section.title, systemImage: section.symbolName)
+                    .tag(section)
+            }
+            .listStyle(.sidebar)
+            .navigationTitle("Clarity")
+        } detail: {
+            screen
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(ClarityColor.page)
+        }
+        .toolbar {
+            ToolbarItem {
+                Button {
+                    Task { await store.syncAllConnections() }
+                } label: {
+                    Label("Sync", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .disabled(store.isSyncing)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var screen: some View {
+        switch selectedSection {
+        case .overview:
+            OverviewView(store: store) { selectedSection = $0 }
+        case .accounts:
+            AccountsView(store: store)
+        case .transactions:
+            TransactionsView(store: store)
+        case .budget:
+            BudgetView(store: store)
+        case .subscriptions:
+            SubscriptionsView(store: store)
+        case .netWorth:
+            NetWorthView(store: store)
+        case .settings:
+            SettingsView(store: store)
+        }
+    }
+}
 #endif
+
+private struct MobileTabBar: View {
+    @Binding var selectedSection: AppSection
+
+    private let tabs: [AppSection] = [.overview, .transactions, .accounts, .subscriptions, .netWorth, .settings]
+
+    var body: some View {
+        HStack {
+            ForEach(tabs) { tab in
+                Spacer()
+
+                Button {
+                    selectedSection = tab
+                } label: {
+                    Image(systemName: tab.symbolName)
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(selectedSection == tab ? ClarityColor.primaryText : ClarityColor.mutedText)
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 12)
+        .background(
+            Rectangle()
+                .fill(ClarityColor.page.opacity(0.94))
+                .overlay(alignment: .top) {
+                    Rectangle()
+                        .fill(ClarityColor.stroke)
+                        .frame(height: 1)
+                }
+                .ignoresSafeArea(edges: .bottom)
+        )
     }
 }
 
 #Preview {
-    ContentView()
-        .modelContainer(for: Item.self, inMemory: true)
+    ContentView(store: FinanceStore())
 }
