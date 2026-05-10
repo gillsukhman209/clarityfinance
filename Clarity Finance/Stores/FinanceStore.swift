@@ -12,6 +12,7 @@ final class FinanceStore {
     var hostedLinkSession: PlaidHostedLinkSession?
     var diagnosticLog: [String] = []
     var selectedAccountIDs: Set<String> = []
+    var recurringDiagnostics: [String] = []
 
     private let plaidClient = PlaidSandboxClient()
     private let fileURL: URL
@@ -29,12 +30,12 @@ final class FinanceStore {
         credentials = PlaidCredentials(
             clientID: (try? KeychainStore.read(account: "plaid-client-id")) ?? PlaidCredentials.bundledSandbox.clientID,
             sandboxSecret: (try? KeychainStore.read(account: "plaid-sandbox-secret")) ?? PlaidCredentials.bundledSandbox.sandboxSecret,
-            productionSecret: (try? KeychainStore.read(account: "plaid-production-secret")) ?? PlaidCredentials.bundledSandbox.productionSecret
+            productionSecret: (try? KeychainStore.read(account: "plaid-production-secret")) ?? PlaidCredentials.bundledSandbox.productionSecret,
+            linkCustomizationName: (try? KeychainStore.read(account: "plaid-link-customization-name")) ?? PlaidCredentials.bundledSandbox.linkCustomizationName
         )
 
         removeLegacySampleDataIfNeeded()
-        rebuildBudgets()
-        rebuildSubscriptions()
+        resetToConnectionOnlyData()
         save()
         recordDiagnostic("FinanceStore initialized. Diagnostics build active.")
     }
@@ -62,7 +63,7 @@ final class FinanceStore {
     }
 
     var monthlySpend: Double {
-        filteredTransactions.monthlyExpenseTotal
+        expenseTotal(inMonthOf: reportingMonthAnchor)
     }
 
     var hasFinancialData: Bool {
@@ -70,17 +71,14 @@ final class FinanceStore {
     }
 
     var incomeThisMonth: Double {
-        let calendar = Calendar.current
-        return filteredTransactions
-            .filter { $0.isIncome && calendar.isDate($0.date, equalTo: Date(), toGranularity: .month) }
-            .reduce(0) { $0 + abs($1.amount) }
+        incomeTotal(inMonthOf: reportingMonthAnchor)
     }
 
     var monthlyChartValues: [Double] {
         let calendar = Calendar.current
-        let now = Date()
+        let anchor = reportingMonthAnchor
         let currentMonthTransactions = filteredTransactions.filter {
-            !$0.isIncome && calendar.isDate($0.date, equalTo: now, toGranularity: .month)
+            !$0.isIncome && calendar.isDate($0.date, equalTo: anchor, toGranularity: .month)
         }
 
         return stride(from: 0, through: 5, by: 1).map { index in
@@ -89,6 +87,27 @@ final class FinanceStore {
                 .filter { calendar.component(.day, from: $0.date) <= upperDay }
                 .reduce(0) { $0 + abs($1.amount) }
         }
+    }
+
+    var reportingMonthAnchor: Date {
+        let calendar = Calendar.current
+        let now = Date()
+        let hasCurrentMonthSpending = filteredTransactions.contains {
+            !$0.isIncome && calendar.isDate($0.date, equalTo: now, toGranularity: .month)
+        }
+
+        if hasCurrentMonthSpending {
+            return now
+        }
+
+        return filteredTransactions
+            .filter { !$0.isIncome }
+            .map(\.date)
+            .max() ?? now
+    }
+
+    var reportingMonthTitle: String {
+        reportingMonthAnchor.formatted(.dateTime.month(.wide).year())
     }
 
     var diagnosticsText: String {
@@ -115,11 +134,86 @@ final class FinanceStore {
     }
 
     var filteredSubscriptions: [SubscriptionItem] {
-        guard !selectedAccountIDs.isEmpty else { return data.subscriptions }
-        return data.subscriptions.filter { subscription in
+        let activeSubscriptions = correctedRecurringCharges.filter {
+            let key = FinanceCoachEngine.subscriptionKey($0)
+            return $0.recurringKind == .subscription &&
+                data.recurringChargeCorrections[key] != .ignored &&
+                !data.ignoredSubscriptionKeys.contains(key)
+        }
+        guard !selectedAccountIDs.isEmpty else { return activeSubscriptions }
+        return activeSubscriptions.filter { subscription in
             guard let accountID = subscription.accountID else { return false }
             return selectedAccountIDs.contains(accountID)
         }
+    }
+
+    var filteredRecurringBills: [SubscriptionItem] {
+        let activeBills = correctedRecurringCharges.filter {
+            let key = FinanceCoachEngine.subscriptionKey($0)
+            return $0.recurringKind == .bill &&
+                data.recurringChargeCorrections[key] != .ignored &&
+                !data.ignoredSubscriptionKeys.contains(key)
+        }
+        guard !selectedAccountIDs.isEmpty else { return activeBills }
+        return activeBills.filter { bill in
+            guard let accountID = bill.accountID else { return false }
+            return selectedAccountIDs.contains(accountID)
+        }
+    }
+
+    var correctedRecurringCharges: [SubscriptionItem] {
+        data.subscriptions.map { subscription in
+            var corrected = subscription
+            switch data.recurringChargeCorrections[FinanceCoachEngine.subscriptionKey(subscription)] {
+            case .subscription:
+                corrected.recurringKind = .subscription
+            case .bill:
+                corrected.recurringKind = .bill
+            case .ignored, .none:
+                break
+            }
+            return corrected
+        }
+    }
+
+    var moneyInsights: [MoneyInsight] {
+        FinanceCoachEngine.insights(
+            transactions: filteredTransactions,
+            subscriptions: filteredSubscriptions,
+            accounts: filteredAccounts,
+            anchor: reportingMonthAnchor
+        )
+    }
+
+    var moneyWrapped: MoneyWrapped {
+        FinanceCoachEngine.wrapped(
+            transactions: filteredTransactions,
+            subscriptions: filteredSubscriptions,
+            anchor: reportingMonthAnchor
+        )
+    }
+
+    var spendingPersonality: SpendingPersonality {
+        FinanceCoachEngine.personality(
+            for: filteredTransactions,
+            subscriptions: filteredSubscriptions,
+            anchor: reportingMonthAnchor
+        )
+    }
+
+    var subscriptionIntelligence: [SubscriptionIntelligence] {
+        let subscriptions = correctedRecurringCharges.filter { subscription in
+            guard !selectedAccountIDs.isEmpty else { return true }
+            guard let accountID = subscription.accountID else { return false }
+            return selectedAccountIDs.contains(accountID)
+        }
+
+        return FinanceCoachEngine.subscriptionIntelligence(
+            subscriptions: subscriptions,
+            transactions: filteredTransactions,
+            accounts: data.accounts,
+            corrections: data.recurringChargeCorrections
+        )
     }
 
     var filteredBudgets: [BudgetCategory] {
@@ -142,6 +236,20 @@ final class FinanceStore {
         data.accounts.first { $0.id == accountID }
     }
 
+    func expenseTotal(inMonthOf anchor: Date) -> Double {
+        let calendar = Calendar.current
+        return filteredTransactions
+            .filter { !$0.isIncome && calendar.isDate($0.date, equalTo: anchor, toGranularity: .month) }
+            .reduce(0) { $0 + abs($1.amount) }
+    }
+
+    func incomeTotal(inMonthOf anchor: Date) -> Double {
+        let calendar = Calendar.current
+        return filteredTransactions
+            .filter { $0.isIncome && calendar.isDate($0.date, equalTo: anchor, toGranularity: .month) }
+            .reduce(0) { $0 + abs($1.amount) }
+    }
+
     func recordDiagnostic(_ message: String) {
         let timestamp = Date().formatted(.dateTime.hour().minute().second())
         let line = "[\(timestamp)] \(message)"
@@ -157,19 +265,21 @@ final class FinanceStore {
         recordDiagnostic("Diagnostics cleared.")
     }
 
-    func saveCredentials(clientID: String, sandboxSecret: String, productionSecret: String) {
-        recordDiagnostic("Saving Plaid credentials. clientID set=\(!clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), sandbox secret set=\(!sandboxSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), production secret set=\(!productionSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).")
+    func saveCredentials(clientID: String, sandboxSecret: String, productionSecret: String, linkCustomizationName: String) {
+        recordDiagnostic("Saving Plaid credentials. clientID set=\(!clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), sandbox secret set=\(!sandboxSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), production secret set=\(!productionSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), link customization set=\(!linkCustomizationName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).")
 
         credentials = PlaidCredentials(
             clientID: clientID,
             sandboxSecret: sandboxSecret,
-            productionSecret: productionSecret
+            productionSecret: productionSecret,
+            linkCustomizationName: linkCustomizationName
         )
 
         do {
             try KeychainStore.save(clientID, account: "plaid-client-id")
             try KeychainStore.save(sandboxSecret, account: "plaid-sandbox-secret")
             try KeychainStore.save(productionSecret, account: "plaid-production-secret")
+            try KeychainStore.save(linkCustomizationName, account: "plaid-link-customization-name")
             statusMessage = "Plaid credentials saved."
             lastErrorMessage = nil
             recordDiagnostic("Plaid credentials saved to Keychain.")
@@ -205,15 +315,10 @@ final class FinanceStore {
                 profile: profile
             )
             let accounts = try await plaidClient.fetchAccounts(credentials: credentials, connection: connection, environment: .sandbox)
-            let sync = try await plaidClient.syncTransactions(credentials: credentials, connection: connection, environment: .sandbox)
-            connection.cursor = sync.nextCursor
             connection.lastSyncedAt = Date()
 
             data.connections.append(connection)
             upsert(accounts: accounts)
-            upsert(transactions: sync.transactions)
-            removeTransactions(ids: sync.removedTransactionIDs)
-            rebuildDerivedData()
             save()
             statusMessage = "Connected \(connection.institutionName) with \(accounts.count) accounts."
         } catch {
@@ -235,29 +340,47 @@ final class FinanceStore {
         }
 
         isSyncing = true
-        statusMessage = "Syncing Plaid data..."
+        statusMessage = "Refreshing Plaid accounts..."
         lastErrorMessage = nil
 
         do {
             for index in data.connections.indices {
                 var connection = data.connections[index]
                 let environment = environment(for: connection)
-                try? await plaidClient.refreshTransactions(credentials: credentials, connection: connection, environment: environment)
                 let accounts = try await plaidClient.fetchAccounts(credentials: credentials, connection: connection, environment: environment)
-                let sync = try await plaidClient.syncTransactions(credentials: credentials, connection: connection, environment: environment)
-                connection.cursor = sync.nextCursor
                 connection.lastSyncedAt = Date()
                 data.connections[index] = connection
                 upsert(accounts: accounts)
-                upsert(transactions: sync.transactions)
-                removeTransactions(ids: sync.removedTransactionIDs)
+                recordDiagnostic("Refreshed \(accounts.count) account(s) for \(connection.institutionName).")
             }
 
-            rebuildDerivedData()
             save()
-            statusMessage = "Plaid data is up to date."
+            statusMessage = "Plaid accounts are up to date."
         } catch {
             lastErrorMessage = error.localizedDescription
+        }
+
+        isSyncing = false
+    }
+
+    func refreshRecurringCharges() async {
+        guard !data.connections.isEmpty else {
+            lastErrorMessage = "Connect a Plaid account before refreshing recurring charges."
+            return
+        }
+
+        isSyncing = true
+        statusMessage = "Refreshing Plaid recurring charges..."
+        lastErrorMessage = nil
+
+        let plaidSubscriptions = await fetchPlaidRecurringSubscriptionsForAllConnections()
+        rebuildDerivedData(plaidSubscriptions: plaidSubscriptions)
+        save()
+
+        if let plaidSubscriptions {
+            statusMessage = "Plaid recurring refresh complete: \(plaidSubscriptions.count) stream(s)."
+        } else {
+            statusMessage = "Plaid recurring refresh failed. Existing recurring data was kept."
         }
 
         isSyncing = false
@@ -273,10 +396,10 @@ final class FinanceStore {
         }
 
         isSyncing = true
-        statusMessage = "Creating a Plaid bank link..."
+        statusMessage = "Creating an in-app Plaid bank link..."
         lastErrorMessage = nil
         hostedLinkSession = nil
-        recordDiagnostic("Calling Plaid /link/token/create in Production.")
+        recordDiagnostic("Calling Plaid /link/token/create in Production. linkCustomization=\(credentials.normalizedLinkCustomizationName ?? "default"), daysRequested=\(PlaidSandboxClient.requestedTransactionHistoryDays).")
 
         do {
             let hostedSession = try await plaidClient.createHostedLinkSession(
@@ -285,7 +408,7 @@ final class FinanceStore {
             )
 
             hostedLinkSession = hostedSession
-            statusMessage = "Plaid link is ready. Open it below, finish bank login, then return here to import."
+            statusMessage = "Plaid link is ready. Finish bank login inside Clarity, then import accounts."
             recordDiagnostic("Plaid Hosted Link created. urlHost=\(hostedSession.hostedLinkURL.host ?? "unknown"), linkTokenLength=\(hostedSession.linkToken.count).")
         } catch {
             lastErrorMessage = error.localizedDescription
@@ -300,7 +423,7 @@ final class FinanceStore {
         recordDiagnostic("finishRealBankConnection() entered. hostedLinkReady=\(hostedLinkSession != nil).")
 
         guard let hostedLinkSession else {
-            lastErrorMessage = "Create a Plaid link first, then finish the bank login in your browser."
+            lastErrorMessage = "Create a Plaid link first, then finish the bank login inside Clarity."
             recordDiagnostic("finishRealBankConnection() stopped: no Hosted Link session in memory.")
             return
         }
@@ -330,19 +453,13 @@ final class FinanceStore {
                 publicToken: publicToken,
                 environment: .production
             )
-            recordDiagnostic("Public token exchanged. institution=\(connection.institutionName), itemIDLength=\(connection.itemID.count). Fetching accounts.")
+            recordDiagnostic("Public token exchanged. institution=\(connection.institutionName), itemIDLength=\(connection.itemID.count). Fetching accounts only.")
             let accounts = try await plaidClient.fetchAccounts(credentials: credentials, connection: connection, environment: .production)
-            recordDiagnostic("Fetched \(accounts.count) account(s). Syncing transactions.")
-            let sync = try await plaidClient.syncTransactions(credentials: credentials, connection: connection, environment: .production)
-            recordDiagnostic("Synced transactions. addedOrModified=\(sync.transactions.count), removed=\(sync.removedTransactionIDs.count).")
-            connection.cursor = sync.nextCursor
+            recordDiagnostic("Fetched \(accounts.count) account(s). Transactions and recurring import are disabled for the fresh rebuild.")
             connection.lastSyncedAt = Date()
 
             data.connections.append(connection)
             upsert(accounts: accounts)
-            upsert(transactions: sync.transactions)
-            removeTransactions(ids: sync.removedTransactionIDs)
-            rebuildDerivedData()
             save()
             self.hostedLinkSession = nil
             statusMessage = "Connected \(connection.institutionName) with \(accounts.count) accounts."
@@ -384,19 +501,113 @@ final class FinanceStore {
             upsert(transactions: result.transactions)
             rebuildDerivedData()
             save()
+            let importedExpenseTotal = result.transactions
+                .filter { !$0.isIncome }
+                .reduce(0) { $0 + abs($1.amount) }
             statusMessage = "Imported \(result.transactions.count) Apple Card PDF transactions."
             lastErrorMessage = nil
+            recordDiagnostic("Apple Card PDF imported. transactions=\(result.transactions.count), expenseTotal=\(MoneyFormat.currency(importedExpenseTotal)), reportingMonth=\(reportingMonthTitle), monthlySpend=\(MoneyFormat.currency(monthlySpend)).")
         } catch {
             lastErrorMessage = error.localizedDescription
         }
     }
 
+    func backfillTransactionHistory() async {
+        guard !data.connections.isEmpty else {
+            lastErrorMessage = "Connect a Plaid account before backfilling transaction history."
+            return
+        }
+
+        isSyncing = true
+        statusMessage = "Backfilling up to \(PlaidSandboxClient.requestedTransactionHistoryDays) days of transaction history..."
+        lastErrorMessage = nil
+        recordDiagnostic("Backfill started. Resetting local Plaid transaction cursors and syncing available history.")
+
+        do {
+            for index in data.connections.indices {
+                var connection = data.connections[index]
+                let environment = environment(for: connection)
+                connection.cursor = nil
+
+                let accounts = try await plaidClient.fetchAccounts(credentials: credentials, connection: connection, environment: environment)
+                let sync = try await syncTransactionsWithInitialPolling(
+                    connection: &connection,
+                    environment: environment,
+                    shouldPollForInitialData: true
+                )
+
+                connection.lastSyncedAt = Date()
+                data.connections[index] = connection
+                upsert(accounts: accounts)
+                upsert(transactions: sync.transactions)
+                removeTransactions(ids: sync.removedTransactionIDs)
+                recordDiagnostic("Backfill synced \(sync.transactions.count) transaction update(s) for \(connection.institutionName).")
+                recordTransactionCoverage(context: "history backfill", accounts: accounts)
+            }
+
+            let plaidSubscriptions = await fetchPlaidRecurringSubscriptionsForAllConnections()
+            rebuildDerivedData(plaidSubscriptions: plaidSubscriptions)
+            save()
+            statusMessage = "Backfill complete. If a bank still starts around Apr 15, reconnect it so Plaid can create a new Item with \(PlaidSandboxClient.requestedTransactionHistoryDays) days requested."
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            recordDiagnostic("Backfill failed: \(error.localizedDescription)")
+        }
+
+        isSyncing = false
+    }
+
     func clearLocalData() {
         data = .empty
         selectedAccountIDs = []
+        hostedLinkSession = nil
         save()
         statusMessage = "Cleared local financial data."
         lastErrorMessage = nil
+    }
+
+    private func resetToConnectionOnlyData() {
+        let removedTransactions = data.transactions.count
+        let removedSubscriptions = data.subscriptions.count
+        let removedBudgets = data.budgets.count
+        let removedSnapshots = data.netWorthSnapshots.count
+
+        data.transactions = []
+        data.subscriptions = []
+        data.budgets = []
+        data.netWorthSnapshots = []
+        data.ignoredSubscriptionKeys = []
+        data.recurringChargeCorrections = [:]
+        selectedAccountIDs = []
+        recurringDiagnostics = []
+
+        guard removedTransactions > 0 || removedSubscriptions > 0 || removedBudgets > 0 || removedSnapshots > 0 else {
+            return
+        }
+
+        print("[Clarity Diagnostics] Connection-only reset removed transactions=\(removedTransactions), subscriptions=\(removedSubscriptions), budgets=\(removedBudgets), snapshots=\(removedSnapshots).")
+    }
+
+    func setRecurringCharge(_ subscription: SubscriptionItem, correction: RecurringChargeCorrection?) {
+        let key = FinanceCoachEngine.subscriptionKey(subscription)
+
+        if let correction {
+            data.recurringChargeCorrections[key] = correction
+            switch correction {
+            case .subscription:
+                statusMessage = "\(subscription.displayName) marked as a subscription."
+            case .bill:
+                statusMessage = "\(subscription.displayName) marked as a bill."
+            case .ignored:
+                statusMessage = "\(subscription.displayName) hidden from recurring charges."
+            }
+        } else {
+            data.recurringChargeCorrections.removeValue(forKey: key)
+            statusMessage = "\(subscription.displayName) restored to Plaid's classification."
+        }
+
+        data.ignoredSubscriptionKeys.remove(key)
+        save()
     }
 
     private func upsert(accounts: [FinancialAccount]) {
@@ -414,6 +625,9 @@ final class FinanceStore {
 
     private func upsert(transactions: [FinanceTransaction]) {
         for transaction in transactions {
+            var transaction = transaction
+            transaction.merchantName = MerchantNameCleaner.clean(transaction.merchantName)
+
             if let index = data.transactions.firstIndex(where: { $0.id == transaction.id }) {
                 data.transactions[index] = transaction
             } else {
@@ -422,21 +636,143 @@ final class FinanceStore {
         }
     }
 
+    private func normalizeStoredTransactionMerchantNames() {
+        var changedCount = 0
+        data.transactions = data.transactions.map { transaction in
+            var cleaned = transaction
+            let cleanName = MerchantNameCleaner.clean(transaction.merchantName)
+            if cleanName != transaction.merchantName {
+                cleaned.merchantName = cleanName
+                changedCount += 1
+            }
+            return cleaned
+        }
+
+        if changedCount > 0 {
+            recordDiagnostic("Cleaned \(changedCount) stored transaction merchant name(s).")
+        }
+    }
+
+    private func normalizeStoredRecurringNames() {
+        var changedCount = 0
+        data.subscriptions = data.subscriptions.map { subscription in
+            var cleaned = subscription
+            let displayName = subscription.displayName
+            if displayName != subscription.merchantName {
+                cleaned.merchantName = displayName
+                changedCount += 1
+            }
+            return cleaned
+        }
+
+        if changedCount > 0 {
+            recordDiagnostic("Cleaned \(changedCount) stored recurring charge name(s).")
+        }
+    }
+
+    private func syncTransactionsWithInitialPolling(
+        connection: inout PlaidConnection,
+        environment: PlaidEnvironment,
+        shouldPollForInitialData: Bool
+    ) async throws -> PlaidSyncResult {
+        var combinedTransactions: [FinanceTransaction] = []
+        var combinedRemovedTransactionIDs: [String] = []
+
+        for attempt in 1...6 {
+            let sync = try await plaidClient.syncTransactions(
+                credentials: credentials,
+                connection: connection,
+                environment: environment
+            )
+
+            combinedTransactions.append(contentsOf: sync.transactions)
+            combinedRemovedTransactionIDs.append(contentsOf: sync.removedTransactionIDs)
+            connection.cursor = sync.nextCursor
+
+            if !shouldPollForInitialData || !combinedTransactions.isEmpty {
+                return PlaidSyncResult(
+                    transactions: combinedTransactions,
+                    removedTransactionIDs: combinedRemovedTransactionIDs,
+                    nextCursor: connection.cursor
+                )
+            }
+
+            guard attempt < 6 else { break }
+            recordDiagnostic("Plaid returned 0 transactions on initial sync attempt \(attempt)/6. Waiting for initial transaction data.")
+            try await Task.sleep(for: .seconds(5))
+        }
+
+        return PlaidSyncResult(
+            transactions: combinedTransactions,
+            removedTransactionIDs: combinedRemovedTransactionIDs,
+            nextCursor: connection.cursor
+        )
+    }
+
+    private func recordTransactionCoverage(context: String, accounts: [FinancialAccount]) {
+        let counts = Dictionary(grouping: data.transactions, by: \.accountID).mapValues(\.count)
+        let summary = accounts
+            .map { account in
+                "\(account.kind.title) \(account.displayName): \(counts[account.id, default: 0])"
+            }
+            .joined(separator: " | ")
+
+        recordDiagnostic("Transaction coverage after \(context): \(summary.isEmpty ? "no accounts" : summary).")
+    }
+
     private func removeTransactions(ids: [String]) {
         guard !ids.isEmpty else { return }
         let removed = Set(ids)
         data.transactions.removeAll { removed.contains($0.id) }
     }
 
-    private func rebuildDerivedData() {
+    private func rebuildDerivedData(plaidSubscriptions: [SubscriptionItem]? = nil) {
         rebuildBudgets()
-        rebuildSubscriptions()
+        if let plaidSubscriptions {
+            replaceRecurringCharges(with: plaidSubscriptions)
+        }
         appendNetWorthSnapshot()
         recordDiagnostic("Derived data rebuilt. budgets=\(data.budgets.count), subscriptions=\(data.subscriptions.count), netWorthSnapshots=\(data.netWorthSnapshots.count).")
     }
 
+    private func fetchPlaidRecurringSubscriptionsForAllConnections() async -> [SubscriptionItem]? {
+        guard !data.connections.isEmpty else { return [] }
+
+        var subscriptions: [SubscriptionItem] = []
+        var diagnostics: [String] = []
+        var successfulFetches = 0
+
+        for connection in data.connections {
+            let environment = environment(for: connection)
+
+            do {
+                let result = try await plaidClient.fetchRecurringSubscriptions(
+                    credentials: credentials,
+                    connection: connection,
+                    environment: environment
+                )
+                successfulFetches += 1
+                subscriptions.append(contentsOf: result.items)
+                diagnostics.append("\(connection.institutionName): raw outflow streams=\(result.rawOutflowCount), mapped=\(result.mappedCount)")
+                if result.rawOutflowCount == 0 {
+                    diagnostics.append("  Plaid returned 0 recurring outflow streams for this Item.")
+                }
+                diagnostics.append(contentsOf: result.streamSummaries.map { "  \($0)" })
+                diagnostics.append(contentsOf: result.droppedSummaries.map { "  DROP: \($0)" })
+                recordDiagnostic("Plaid recurring streams fetched for \(connection.institutionName): rawOutflows=\(result.rawOutflowCount), mapped=\(result.mappedCount).")
+            } catch {
+                let line = "\(connection.institutionName): recurring unavailable: \(error.localizedDescription)"
+                diagnostics.append(line)
+                recordDiagnostic("Plaid recurring streams unavailable for \(connection.institutionName): \(error.localizedDescription). No local fallback will be used.")
+            }
+        }
+
+        recurringDiagnostics = diagnostics
+        return successfulFetches > 0 ? subscriptions : nil
+    }
+
     private func environment(for connection: PlaidConnection) -> PlaidEnvironment {
-        connection.accessToken.contains("access-production") ? .production : .sandbox
+        connection.environment
     }
 
     private func waitForHostedPublicTokens(linkToken: String) async throws -> [PlaidHostedPublicToken] {
@@ -487,104 +823,28 @@ final class FinanceStore {
         .sorted { $0.category.title < $1.category.title }
     }
 
-    private func rebuildSubscriptions() {
-        let candidates = data.transactions.filter { !$0.isIncome }
-        let grouped = Dictionary(grouping: candidates) { transaction in
-            "\(transaction.accountID)|\(Self.normalizedMerchantName(transaction.merchantName))"
-        }
-
-        let inferred = grouped.compactMap { _, transactions -> SubscriptionItem? in
-            let sorted = transactions.sorted { $0.date < $1.date }
-            guard let last = sorted.last else { return nil }
-            let hasSubscriptionSignal = sorted.contains { transaction in
-                transaction.category == .subscriptions || Self.looksLikeSubscriptionMerchant(transaction.merchantName)
+    private func replaceRecurringCharges(with plaidSubscriptions: [SubscriptionItem]) {
+        data.subscriptions = plaidSubscriptions
+            .filter { $0.source == .plaid }
+            .map { subscription in
+                var cleaned = subscription
+                cleaned.merchantName = subscription.displayName
+                return cleaned
             }
-            let cadenceDays = Self.recurringCadenceDays(from: sorted)
-            let hasRecurringPattern = cadenceDays != nil
-            guard hasRecurringPattern || hasSubscriptionSignal else { return nil }
+            .sorted { $0.monthlyAmount > $1.monthlyAmount }
 
-            let averageCharge = sorted.reduce(0) { $0 + abs($1.amount) } / Double(sorted.count)
-            guard averageCharge <= 500 || hasRecurringPattern else { return nil }
-            let monthlyAmount = Self.monthlyEquivalentAmount(averageCharge: averageCharge, cadenceDays: cadenceDays)
+        let validKeys = Set(data.subscriptions.map(FinanceCoachEngine.subscriptionKey))
+        data.recurringChargeCorrections = data.recurringChargeCorrections.filter { validKeys.contains($0.key) }
+        data.ignoredSubscriptionKeys = data.ignoredSubscriptionKeys.intersection(validKeys)
+    }
 
-            let nextDate = Self.nextExpectedDate(from: sorted)
-            let merchantKey = Self.normalizedMerchantName(last.merchantName)
-            return SubscriptionItem(
-                id: "sub-\(last.accountID)-\(merchantKey)",
-                merchantName: last.merchantName,
-                category: last.category == .other ? .subscriptions : last.category,
-                monthlyAmount: monthlyAmount,
-                nextExpectedDate: nextDate,
-                accountID: last.accountID
-            )
+    private func discardLegacyLocalSubscriptions() {
+        let before = data.subscriptions.count
+        data.subscriptions.removeAll { $0.source != .plaid }
+
+        if before != data.subscriptions.count {
+            recordDiagnostic("Removed \(before - data.subscriptions.count) legacy local recurring guess(es). Plaid recurring streams are now the only detection source.")
         }
-
-        data.subscriptions = inferred.sorted { $0.monthlyAmount > $1.monthlyAmount }
-    }
-
-    private static func hasRecurringPattern(_ transactions: [FinanceTransaction]) -> Bool {
-        recurringCadenceDays(from: transactions) != nil
-    }
-
-    private static func recurringCadenceDays(from transactions: [FinanceTransaction]) -> Int? {
-        guard transactions.count >= 2 else { return nil }
-        guard amountsAreSimilar(transactions) else { return nil }
-
-        let sorted = transactions.sorted { $0.date < $1.date }
-        let intervals = zip(sorted, sorted.dropFirst()).map {
-            Calendar.current.dateComponents([.day], from: $0.date, to: $1.date).day ?? 0
-        }
-        guard !intervals.isEmpty else { return nil }
-
-        return intervals.reversed().first { interval in
-            (6...8).contains(interval) ||
-                (13...16).contains(interval) ||
-                (26...35).contains(interval) ||
-                (80...100).contains(interval) ||
-                (350...380).contains(interval)
-        }
-    }
-
-    private static func amountsAreSimilar(_ transactions: [FinanceTransaction]) -> Bool {
-        let amounts = transactions.map { abs($0.amount) }
-        guard let minimumAmount = amounts.min(), let maximumAmount = amounts.max(), maximumAmount > 0 else { return false }
-        let tolerance = Swift.max(2.0, maximumAmount * 0.18)
-        return maximumAmount - minimumAmount <= tolerance
-    }
-
-    private static func nextExpectedDate(from transactions: [FinanceTransaction]) -> Date {
-        let sorted = transactions.sorted { $0.date < $1.date }
-        guard let last = sorted.last else { return .daysFromNow(30) }
-
-        let cadenceDays = recurringCadenceDays(from: sorted) ?? 30
-        return Calendar.current.date(byAdding: .day, value: cadenceDays, to: last.date) ?? .daysFromNow(30)
-    }
-
-    private static func monthlyEquivalentAmount(averageCharge: Double, cadenceDays: Int?) -> Double {
-        guard let cadenceDays, cadenceDays > 0 else { return averageCharge }
-        return averageCharge * (30.4375 / Double(cadenceDays))
-    }
-
-    private static func normalizedMerchantName(_ merchantName: String) -> String {
-        merchantName
-            .lowercased()
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty }
-            .joined(separator: "-")
-    }
-
-    private static func looksLikeSubscriptionMerchant(_ merchantName: String) -> Bool {
-        let lowercased = merchantName.lowercased()
-        let keywords = [
-            "apple", "netflix", "spotify", "hulu", "disney", "max", "peacock",
-            "youtube", "google", "amazon prime", "icloud", "dropbox", "adobe",
-            "microsoft", "notion", "openai", "chatgpt", "github", "patreon",
-            "substack", "nyt", "new york times", "wsj", "wall street journal",
-            "paramount", "sirius", "audible", "kindle", "canva", "figma",
-            "grammarly", "superhuman", "setapp", "zoom", "slack", "discord",
-            "recurring", "subscription", "membership", "monthly", "annual"
-        ]
-        return keywords.contains { lowercased.contains($0) }
     }
 
     private func appendNetWorthSnapshot() {

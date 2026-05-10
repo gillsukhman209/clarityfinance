@@ -7,30 +7,44 @@ import AppKit
 #endif
 
 struct AccountsView: View {
-    @Environment(\.openURL) private var openURL
-
     @Bindable var store: FinanceStore
+
+    var body: some View {
+        ScrollView {
+            AccountsContent(store: store, showsTitle: true)
+                .padding(24)
+                .frame(maxWidth: 900, alignment: .leading)
+        }
+    }
+}
+
+struct AccountsContent: View {
+    @Bindable var store: FinanceStore
+    var showsTitle = true
+    var showsStatusAndDiagnostics = true
     @State private var isImportingStatement = false
+    @State private var plaidWebSession: PlaidWebSession?
     @State private var institutionID = PlaidSandboxInstitution.firstPlatypus.id
     @State private var institutionName = PlaidSandboxInstitution.firstPlatypus.name
     @State private var profile: PlaidSandboxProfile = .transactionsDynamic
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 18) {
+            if showsTitle {
                 ScreenTitle(title: "Accounts", subtitle: "All connected banks, cards, and manual statements.")
+            }
 
-                HStack(spacing: 12) {
-                    MetricCard(title: "Assets", value: MoneyFormat.currency(store.assetsTotal), caption: "Cash and investments", symbolName: "banknote.fill", tint: ClarityColor.green)
-                    MetricCard(title: "Liabilities", value: MoneyFormat.currency(store.liabilitiesTotal), caption: "Credit and loans", symbolName: "creditcard.fill", tint: ClarityColor.red)
-                }
+            HStack(spacing: 12) {
+                MetricCard(title: "Assets", value: MoneyFormat.currency(store.assetsTotal), caption: "Cash and investments", symbolName: "banknote.fill", tint: ClarityColor.green)
+                MetricCard(title: "Liabilities", value: MoneyFormat.currency(store.liabilitiesTotal), caption: "Credit and loans", symbolName: "creditcard.fill", tint: ClarityColor.red)
+            }
 
-                if !store.data.accounts.isEmpty {
-                    AccountFilterBar(accounts: store.data.accounts, selectedAccountIDs: $store.selectedAccountIDs)
-                }
+            if !store.data.accounts.isEmpty {
+                AccountFilterBar(accounts: store.data.accounts, selectedAccountIDs: $store.selectedAccountIDs)
+            }
 
-                VStack(alignment: .leading, spacing: 8) {
-                    SectionHeader(title: "Connected accounts")
+            VStack(alignment: .leading, spacing: 8) {
+                SectionHeader(title: "Connected accounts")
 
                     if store.filteredAccounts.isEmpty {
                         EmptyStateView(
@@ -54,14 +68,13 @@ struct AccountsView: View {
                         .font(.subheadline)
                         .foregroundStyle(ClarityColor.secondaryText)
 
-                    Button {
-                        store.recordDiagnostic("Connect Real Bank button tapped in AccountsView.")
-                        Task {
-                            await store.connectRealBank()
+	                    Button {
+	                        store.recordDiagnostic("Connect Real Bank button tapped in AccountsView.")
+	                        Task {
+	                            await store.connectRealBank()
                             if let hostedLinkURL = store.hostedLinkSession?.hostedLinkURL {
-                                store.recordDiagnostic("Calling SwiftUI openURL after Hosted Link creation.")
-                                openURL(hostedLinkURL)
-                                store.recordDiagnostic("SwiftUI openURL call returned after Hosted Link creation.")
+                                store.recordDiagnostic("Presenting Plaid Hosted Link in app web sheet from AccountsView.")
+                                plaidWebSession = PlaidWebSession(url: hostedLinkURL)
                             } else {
                                 store.recordDiagnostic("No Hosted Link URL available after connectRealBank().")
                             }
@@ -69,18 +82,26 @@ struct AccountsView: View {
                     } label: {
                         Label("Connect Real Bank", systemImage: "building.columns.fill")
                             .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(PrimaryClarityButtonStyle())
-                    .disabled(store.isSyncing)
+	                    }
+	                    .buttonStyle(PrimaryClarityButtonStyle())
+	                    .disabled(store.isSyncing)
 
-                    if let hostedLinkSession = store.hostedLinkSession {
+	                    Button {
+	                        Task { await store.backfillTransactionHistory() }
+	                    } label: {
+	                        Label("Backfill 24 Months", systemImage: "clock.arrow.circlepath")
+	                            .frame(maxWidth: .infinity)
+	                    }
+	                    .buttonStyle(SecondaryClarityButtonStyle())
+	                    .disabled(store.isSyncing || store.data.connections.isEmpty)
+
+	                    if let hostedLinkSession = store.hostedLinkSession {
                         PlaidHostedLinkCard(
                             session: hostedLinkSession,
                             isSyncing: store.isSyncing,
                             open: {
                                 store.recordDiagnostic("Open Plaid button tapped. urlHost=\($0.host ?? "unknown").")
-                                openURL($0)
-                                store.recordDiagnostic("SwiftUI openURL call returned from Open Plaid button.")
+                                plaidWebSession = PlaidWebSession(url: $0)
                             },
                             finish: {
                                 store.recordDiagnostic("I Finished Plaid - Import Accounts button tapped.")
@@ -162,6 +183,7 @@ struct AccountsView: View {
                 .padding(18)
                 .clarityCard(radius: 20)
 
+            if showsStatusAndDiagnostics {
                 if let statusMessage = store.statusMessage {
                     StatusBanner(message: statusMessage, isError: false)
                 }
@@ -181,8 +203,6 @@ struct AccountsView: View {
                     }
                 )
             }
-            .padding(24)
-            .frame(maxWidth: 900, alignment: .leading)
         }
         .fileImporter(
             isPresented: $isImportingStatement,
@@ -196,6 +216,9 @@ struct AccountsView: View {
             case .failure(let error):
                 store.lastErrorMessage = error.localizedDescription
             }
+        }
+        .sheet(item: $plaidWebSession) { session in
+            PlaidLinkSheet(store: store, session: session)
         }
     }
 
@@ -226,14 +249,14 @@ private struct PlaidHostedLinkCard: View {
                 Spacer()
             }
 
-            Text("Open Plaid and sign in to your bank. If Safari stays on a white secure.plaid.com page after the bank says you connected, close Safari and return to Clarity.")
+            Text("Open Plaid and sign in to your bank inside Clarity. When your bank says you connected, tap Done to import accounts.")
                 .font(.caption)
                 .foregroundStyle(ClarityColor.secondaryText)
 
             Button {
                 open(session.hostedLinkURL)
             } label: {
-                Label("Open Plaid", systemImage: "safari.fill")
+                Label("Open Plaid in app", systemImage: "rectangle.portrait.and.arrow.right")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(SecondaryClarityButtonStyle())
@@ -270,7 +293,7 @@ private struct PlaidHostedLinkCard: View {
     }
 }
 
-private struct PlaidDiagnosticsCard: View {
+struct PlaidDiagnosticsCard: View {
     var logText: String
     var copy: () -> Void
     var clear: () -> Void

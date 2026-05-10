@@ -4,11 +4,13 @@ struct PlaidCredentials: Equatable {
     var clientID: String
     var sandboxSecret: String
     var productionSecret: String
+    var linkCustomizationName: String
 
     static let bundledSandbox = PlaidCredentials(
         clientID: "6924ab26d99796001d9a0831",
         sandboxSecret: "d304ada4984f45d8d9ddbadfb694b7",
-        productionSecret: "c7114af7920b8905773318448475ba"
+        productionSecret: "c7114af7920b8905773318448475ba",
+        linkCustomizationName: ""
     )
 
     var isSandboxComplete: Bool {
@@ -20,9 +22,14 @@ struct PlaidCredentials: Equatable {
         !clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         !productionSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+
+    var normalizedLinkCustomizationName: String? {
+        let trimmed = linkCustomizationName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
 }
 
-enum PlaidEnvironment {
+enum PlaidEnvironment: String, Codable {
     case sandbox
     case production
 
@@ -60,6 +67,8 @@ enum PlaidEnvironment {
 }
 
 struct PlaidSandboxClient {
+    static let requestedTransactionHistoryDays = 730
+
     private let session: URLSession
 
     init(session: URLSession = PlaidSandboxClient.makeSession()) {
@@ -87,7 +96,8 @@ struct PlaidSandboxClient {
                 initialProducts: ["transactions"],
                 options: SandboxPublicTokenOptions(
                     overrideUsername: profile.username,
-                    overridePassword: profile.password
+                    overridePassword: profile.password,
+                    transactions: SandboxPublicTokenTransactionsOptions(daysRequested: Self.requestedTransactionHistoryDays)
                 )
             ),
             response: SandboxPublicTokenResponse.self,
@@ -111,6 +121,7 @@ struct PlaidSandboxClient {
             institutionID: institution.id,
             institutionName: institution.name,
             accessToken: exchange.accessToken,
+            environment: .sandbox,
             cursor: nil,
             connectedAt: Date(),
             lastSyncedAt: nil
@@ -167,7 +178,7 @@ struct PlaidSandboxClient {
                     accessToken: connection.accessToken,
                     cursor: cursor,
                     count: 500,
-                    options: TransactionsSyncOptions(daysRequested: 730)
+                    options: TransactionsSyncOptions(daysRequested: Self.requestedTransactionHistoryDays)
                 ),
                 response: TransactionsSyncResponse.self,
                 environment: environment
@@ -204,6 +215,35 @@ struct PlaidSandboxClient {
         )
     }
 
+    func fetchRecurringSubscriptions(
+        credentials: PlaidCredentials,
+        connection: PlaidConnection,
+        environment: PlaidEnvironment
+    ) async throws -> PlaidRecurringFetchResult {
+        let response = try await post(
+            path: "/transactions/recurring/get",
+            body: RecurringTransactionsRequest(
+                clientID: credentials.clientID,
+                secret: environment.secret(from: credentials),
+                accessToken: connection.accessToken,
+                options: RecurringTransactionsOptions(personalFinanceCategoryVersion: "v2")
+            ),
+            response: RecurringTransactionsResponse.self,
+            environment: environment
+        )
+
+        let mapped = response.outflowStreams.compactMap(\.subscriptionItem)
+        let dropped = response.outflowStreams.compactMap(\.dropReason)
+
+        return PlaidRecurringFetchResult(
+            items: mapped,
+            rawOutflowCount: response.outflowStreams.count,
+            mappedCount: mapped.count,
+            droppedSummaries: dropped,
+            streamSummaries: response.outflowStreams.map(\.diagnosticSummary)
+        )
+    }
+
     func createHostedLinkSession(
         credentials: PlaidCredentials,
         environment: PlaidEnvironment
@@ -218,6 +258,8 @@ struct PlaidSandboxClient {
                 countryCodes: ["US"],
                 language: "en",
                 user: LinkTokenUser(clientUserID: "local-owner"),
+                linkCustomizationName: credentials.normalizedLinkCustomizationName,
+                transactions: LinkTokenTransactionsOptions(daysRequested: Self.requestedTransactionHistoryDays),
                 redirectURI: nil,
                 hostedLink: HostedLinkCreateOptions(
                     completionRedirectURI: nil,
@@ -276,6 +318,7 @@ struct PlaidSandboxClient {
             institutionID: publicToken.institutionID ?? "linked-institution",
             institutionName: publicToken.institutionName ?? "Linked Bank",
             accessToken: exchange.accessToken,
+            environment: environment,
             cursor: nil,
             connectedAt: Date(),
             lastSyncedAt: nil
@@ -312,6 +355,14 @@ struct PlaidSandboxClient {
     }
 }
 
+struct PlaidRecurringFetchResult {
+    var items: [SubscriptionItem]
+    var rawOutflowCount: Int
+    var mappedCount: Int
+    var droppedSummaries: [String]
+    var streamSummaries: [String]
+}
+
 struct PlaidSyncResult {
     var transactions: [FinanceTransaction]
     var removedTransactionIDs: [String]
@@ -340,6 +391,13 @@ private extension JSONEncoder {
 private extension JSONDecoder {
     static var plaid: JSONDecoder {
         JSONDecoder()
+    }
+}
+
+private extension String {
+    var nilIfBlank: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 
@@ -375,6 +433,8 @@ private struct LinkTokenCreateRequest: Encodable {
     var countryCodes: [String]
     var language: String
     var user: LinkTokenUser
+    var linkCustomizationName: String?
+    var transactions: LinkTokenTransactionsOptions
     var redirectURI: String?
     var hostedLink: HostedLinkCreateOptions
 
@@ -386,6 +446,8 @@ private struct LinkTokenCreateRequest: Encodable {
         case countryCodes = "country_codes"
         case language
         case user
+        case linkCustomizationName = "link_customization_name"
+        case transactions
         case redirectURI = "redirect_uri"
         case hostedLink = "hosted_link"
     }
@@ -396,6 +458,14 @@ private struct LinkTokenUser: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case clientUserID = "client_user_id"
+    }
+}
+
+private struct LinkTokenTransactionsOptions: Encodable {
+    var daysRequested: Int
+
+    enum CodingKeys: String, CodingKey {
+        case daysRequested = "days_requested"
     }
 }
 
@@ -544,6 +614,15 @@ private struct SandboxPublicTokenRequest: Encodable {
 private struct SandboxPublicTokenOptions: Encodable {
     var overrideUsername: String
     var overridePassword: String
+    var transactions: SandboxPublicTokenTransactionsOptions
+}
+
+private struct SandboxPublicTokenTransactionsOptions: Encodable {
+    var daysRequested: Int
+
+    enum CodingKeys: String, CodingKey {
+        case daysRequested = "days_requested"
+    }
 }
 
 private struct SandboxPublicTokenResponse: Decodable {
@@ -685,6 +764,225 @@ private struct RemovedPlaidTransaction: Decodable {
     }
 }
 
+private struct RecurringTransactionsRequest: Encodable {
+    var clientID: String
+    var secret: String
+    var accessToken: String
+    var options: RecurringTransactionsOptions
+
+    enum CodingKeys: String, CodingKey {
+        case clientID = "client_id"
+        case secret
+        case accessToken = "access_token"
+        case options
+    }
+}
+
+private struct RecurringTransactionsOptions: Encodable {
+    var personalFinanceCategoryVersion: String
+
+    enum CodingKeys: String, CodingKey {
+        case personalFinanceCategoryVersion = "personal_finance_category_version"
+    }
+}
+
+private struct RecurringTransactionsResponse: Decodable {
+    var outflowStreams: [PlaidRecurringStream]
+    var inflowStreams: [PlaidRecurringStream]
+
+    enum CodingKeys: String, CodingKey {
+        case outflowStreams = "outflow_streams"
+        case inflowStreams = "inflow_streams"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        outflowStreams = try container.decodeIfPresent([PlaidRecurringStream].self, forKey: .outflowStreams) ?? []
+        inflowStreams = try container.decodeIfPresent([PlaidRecurringStream].self, forKey: .inflowStreams) ?? []
+    }
+}
+
+private struct PlaidRecurringStream: Decodable {
+    var accountID: String
+    var streamID: String
+    var description: String
+    var merchantName: String?
+    var lastDate: String
+    var predictedNextDate: String?
+    var frequency: String
+    var averageAmount: PlaidRecurringAmount
+    var lastAmount: PlaidRecurringAmount
+    var isActive: Bool
+    var status: String
+    var personalFinanceCategory: PlaidPersonalFinanceCategory?
+
+    enum CodingKeys: String, CodingKey {
+        case accountID = "account_id"
+        case streamID = "stream_id"
+        case description
+        case merchantName = "merchant_name"
+        case lastDate = "last_date"
+        case predictedNextDate = "predicted_next_date"
+        case frequency
+        case averageAmount = "average_amount"
+        case lastAmount = "last_amount"
+        case isActive = "is_active"
+        case status
+        case personalFinanceCategory = "personal_finance_category"
+    }
+
+    var subscriptionItem: SubscriptionItem? {
+        guard status != "TOMBSTONED" else { return nil }
+        let average = abs(averageAmount.amount)
+        guard average > 0 else { return nil }
+
+        let nextDate = predictedNextDate.flatMap(Self.dateFormatter.date(from:))
+            ?? nextExpectedDateFromLastCharge
+
+        return SubscriptionItem(
+            id: "plaid-recurring-\(streamID)",
+            merchantName: resolvedMerchantName,
+            category: resolvedCategory,
+            monthlyAmount: Self.monthlyEquivalentAmount(averageAmount: average, frequency: frequency),
+            nextExpectedDate: nextDate,
+            accountID: accountID,
+            recurringKind: resolvedRecurringKind,
+            source: .plaid,
+            frequency: frequency,
+            status: status,
+            lastAmount: abs(lastAmount.amount),
+            averageAmount: average,
+            lastDate: Self.dateFormatter.date(from: lastDate),
+            streamDescription: description,
+            isActive: isActive
+        )
+    }
+
+    var dropReason: String? {
+        if status == "TOMBSTONED" {
+            return "\(resolvedMerchantName): dropped because Plaid status is TOMBSTONED"
+        }
+
+        if abs(averageAmount.amount) <= 0 {
+            return "\(resolvedMerchantName): dropped because average amount is 0"
+        }
+
+        return nil
+    }
+
+    var diagnosticSummary: String {
+        let amount = MoneyFormat.currency(abs(averageAmount.amount))
+        let plaidCategory = [
+            personalFinanceCategory?.primary,
+            personalFinanceCategory?.detailed
+        ]
+        .compactMap { $0?.nilIfBlank }
+        .joined(separator: "/")
+        return "\(resolvedMerchantName) | type=\(resolvedRecurringKind.title) | active=\(isActive) | status=\(status) | frequency=\(frequency) | avg=\(amount) | pfc=\(plaidCategory.isEmpty ? "none" : plaidCategory) | account=\(accountID)"
+    }
+
+    private var resolvedMerchantName: String {
+        let rawName = merchantName?.nilIfBlank ?? description.nilIfBlank ?? "Unknown Merchant"
+        return MerchantNameCleaner.clean(rawName)
+    }
+
+    private var nextExpectedDateFromLastCharge: Date {
+        let lastChargeDate = Self.dateFormatter.date(from: lastDate) ?? Date()
+        let cadenceDays = switch frequency {
+        case "WEEKLY": 7
+        case "BIWEEKLY": 14
+        case "SEMI_MONTHLY": 15
+        case "MONTHLY": 30
+        case "ANNUALLY": 365
+        default: 30
+        }
+        return Calendar.current.date(byAdding: .day, value: cadenceDays, to: lastChargeDate) ?? .daysFromNow(cadenceDays)
+    }
+
+    private var resolvedCategory: TransactionCategory {
+        let categoryText = recurringSignalText
+
+        if categoryText.contains("transfer") || categoryText.contains("payment") { return .transfer }
+        if categoryText.contains("food") || categoryText.contains("restaurant") { return .food }
+        if categoryText.contains("transport") || categoryText.contains("travel") { return .transport }
+        if categoryText.contains("rent") || categoryText.contains("home") || categoryText.contains("mortgage") { return .housing }
+        if categoryText.contains("entertainment") { return .entertainment }
+        if categoryText.contains("medical") || categoryText.contains("health") { return .health }
+        if categoryText.contains("utility") || categoryText.contains("utilities") { return .utilities }
+        if categoryText.contains("shop") || categoryText.contains("merchandise") { return .shopping }
+        return .subscriptions
+    }
+
+    private var resolvedRecurringKind: RecurringChargeKind {
+        let text = recurringSignalText
+
+        let billSignals = [
+            "transfer", "remittance", "investment", "brokerage", "fidelity", "venmo",
+            "zelle", "cash app", "paypal", "loan payments", "rent", "mortgage",
+            "utility", "utilities", "electric", "gas", "water", "solar", "solarcity",
+            "internet", "phone", "wireless", "insurance", "loan", "student loan",
+            "auto loan", "credit card", "payment", "tuition", "property tax",
+            "tax", "hoa", "medical", "healthcare", "provider"
+        ]
+
+        if billSignals.contains(where: { text.contains($0) }) {
+            return .bill
+        }
+
+        let subscriptionSignals = [
+            "subscription", "streaming", "digital", "software", "music", "video",
+            "cloud", "membership", "gym", "fitness", "news", "gaming"
+        ]
+
+        if subscriptionSignals.contains(where: { text.contains($0) }) {
+            return .subscription
+        }
+
+        return .subscription
+    }
+
+    private var recurringSignalText: String {
+        [
+            merchantName,
+            description,
+            personalFinanceCategory?.primary,
+            personalFinanceCategory?.detailed
+        ]
+        .compactMap { $0?.nilIfBlank }
+        .joined(separator: " ")
+        .lowercased()
+    }
+
+    private static func monthlyEquivalentAmount(averageAmount: Double, frequency: String) -> Double {
+        switch frequency {
+        case "WEEKLY":
+            averageAmount * (30.4375 / 7.0)
+        case "BIWEEKLY":
+            averageAmount * (30.4375 / 14.0)
+        case "SEMI_MONTHLY":
+            averageAmount * 2.0
+        case "MONTHLY":
+            averageAmount
+        case "ANNUALLY":
+            averageAmount / 12.0
+        default:
+            averageAmount
+        }
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter
+    }()
+}
+
+private struct PlaidRecurringAmount: Decodable {
+    var amount: Double
+}
+
 private struct PlaidTransaction: Decodable {
     var transactionID: String
     var accountID: String
@@ -711,10 +1009,12 @@ private struct PlaidTransaction: Decodable {
     }
 
     func financeTransaction(source: String) -> FinanceTransaction {
-        FinanceTransaction(
+        let displayName = MerchantNameCleaner.clean(merchantName ?? name)
+
+        return FinanceTransaction(
             id: transactionID,
             accountID: accountID,
-            merchantName: merchantName ?? name,
+            merchantName: displayName,
             originalName: name,
             amount: amount,
             date: Self.dateFormatter.date(from: date) ?? Date(),

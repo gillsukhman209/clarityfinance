@@ -3,36 +3,39 @@ import SwiftUI
 struct OverviewView: View {
     @Bindable var store: FinanceStore
     var navigate: (AppSection) -> Void
+    @State private var selectedTransaction: FinanceTransaction?
 
-    private let weekdayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    private var activeSubscriptions: [SubscriptionItem] {
+        store.filteredSubscriptions.filter(\.isActive)
+    }
+
+    private var activeRecurringTotal: Double {
+        activeSubscriptions.reduce(0) { $0 + $1.monthlyAmount }
+    }
+
+    private var mainInsight: MoneyInsight? {
+        store.moneyInsights.first
+    }
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 28) {
-                    topBar
-                    spendingCard
-                    latestSection
-                    accountsStrip
-                }
-                .padding(.horizontal, 24)
-                .padding(.top, 18)
-                .padding(.bottom, 112)
-                .frame(maxWidth: 620, alignment: .leading)
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 18) {
+                topBar
+                todayBrief
+                closeKnowingCard
+                nextActionCard
+                latestActivity
             }
-
-            Button {
-                navigate(.accounts)
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 30, weight: .medium))
-                    .foregroundStyle(.white)
-                    .frame(width: 68, height: 68)
-                    .background(Circle().fill(Color.black))
-            }
-            .buttonStyle(.plain)
-            .padding(.trailing, 28)
-            .padding(.bottom, 82)
+            .padding(.horizontal, 24)
+            .padding(.top, 18)
+            .padding(.bottom, 104)
+            .frame(maxWidth: 680, alignment: .leading)
+        }
+        .sheet(item: $selectedTransaction) { transaction in
+            TransactionDetailView(
+                transaction: transaction,
+                account: store.account(for: transaction.accountID)
+            )
         }
     }
 
@@ -51,79 +54,135 @@ struct OverviewView: View {
 
             Spacer()
 
-            HStack(spacing: 14) {
-                Button {
-                    navigate(.transactions)
-                } label: {
-                    Image(systemName: "magnifyingglass")
-                }
-
-                Button {
-                    navigate(.accounts)
-                } label: {
-                    Image(systemName: "line.3.horizontal")
-                }
-
-                Button {
-                    navigate(.settings)
-                } label: {
-                    Image(systemName: "gearshape")
-                }
+            Button {
+                Task { await store.syncAllConnections() }
+            } label: {
+                Image(systemName: store.isSyncing ? "clock.arrow.circlepath" : "arrow.triangle.2.circlepath")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(ClarityColor.primaryText)
+                    .frame(width: 42, height: 42)
+                    .background(Circle().fill(ClarityColor.panelElevated))
             }
-            .font(.system(size: 19, weight: .semibold))
-            .foregroundStyle(ClarityColor.primaryText)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(Capsule().fill(ClarityColor.panelElevated))
             .buttonStyle(.plain)
+            .disabled(store.isSyncing)
         }
     }
 
-    private var spendingCard: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Total Spending")
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(ClarityColor.secondaryText)
-
-                Text(MoneyFormat.currency(store.monthlySpend))
-                    .font(.system(size: 44, weight: .bold, design: .rounded))
+    private var todayBrief: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Today")
+                    .font(.title.weight(.bold))
                     .foregroundStyle(ClarityColor.primaryText)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.64)
+
+                Text(primarySentence)
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(ClarityColor.primaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(store.reportingMonthTitle)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(ClarityColor.secondaryText)
             }
 
-            SimpleBarChart(values: weeklySpendValues, labels: weekdayLabels)
-                .frame(height: 210)
+            HStack(spacing: 10) {
+                BriefMetric(title: "Spent", value: MoneyFormat.currency(store.monthlySpend))
+                BriefMetric(title: "Income", value: MoneyFormat.currency(store.incomeThisMonth))
+                BriefMetric(title: "Net worth", value: MoneyFormat.currency(store.totalBalance))
+            }
         }
         .padding(22)
         .clarityCard(radius: 24)
     }
 
-    private var latestSection: some View {
+    private var closeKnowingCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(title: "What changed", systemImage: nil)
+
+            VStack(spacing: 0) {
+                LearningRow(
+                    symbolName: "chart.bar.fill",
+                    title: "This month",
+                    value: MoneyFormat.currency(store.monthlySpend),
+                    caption: monthCaption
+                )
+                BriefDivider()
+                LearningRow(
+                    symbolName: "calendar.badge.clock",
+                    title: "Recurring",
+                    value: MoneyFormat.currency(activeRecurringTotal),
+                    caption: "\(activeSubscriptions.count) active subscription\(activeSubscriptions.count == 1 ? "" : "s")"
+                )
+                BriefDivider()
+                LearningRow(
+                    symbolName: "building.columns.fill",
+                    title: "Accounts",
+                    value: "\(store.filteredAccounts.count)",
+                    caption: store.accountFilterCaption
+                )
+            }
+        }
+        .padding(18)
+        .clarityCard(radius: 22)
+    }
+
+    private var nextActionCard: some View {
+        Button {
+            navigate(mainInsight == nil && !store.hasFinancialData ? .settings : .coach)
+        } label: {
+            HStack(spacing: 14) {
+                IconBadge(symbolName: mainInsight?.symbolName ?? "sparkles")
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(nextActionTitle)
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(ClarityColor.primaryText)
+                        .lineLimit(2)
+
+                    Text(nextActionCaption)
+                        .font(.subheadline)
+                        .foregroundStyle(ClarityColor.secondaryText)
+                        .lineLimit(3)
+                }
+
+                Spacer(minLength: 8)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(ClarityColor.secondaryText)
+            }
+            .padding(18)
+            .clarityCard(radius: 22)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var latestActivity: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Latest")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(ClarityColor.secondaryText)
-                .padding(.leading, 4)
+            SectionHeader(title: "Latest activity", systemImage: nil)
 
             VStack(spacing: 0) {
                 if store.recentTransactions.isEmpty {
                     EmptyStateView(
-                        title: "No transactions yet",
-                        message: "Connect an account or import a statement to start tracking spending.",
+                        title: "No activity yet",
+                        message: "Connect an account or import a statement to see your money in one place.",
                         symbolName: "list.bullet.rectangle.portrait"
                     )
                 } else {
-                    ForEach(Array(store.recentTransactions.prefix(4).enumerated()), id: \.element.id) { index, transaction in
-                        TransactionRow(
-                            transaction: transaction,
-                            account: store.account(for: transaction.accountID)
-                        )
+                    ForEach(Array(store.recentTransactions.prefix(3).enumerated()), id: \.element.id) { index, transaction in
+                        Button {
+                            selectedTransaction = transaction
+                        } label: {
+                            TransactionRow(
+                                transaction: transaction,
+                                account: store.account(for: transaction.accountID)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .contentShape(Rectangle())
 
-                        if index < min(store.recentTransactions.count, 4) - 1 {
-                            Divider()
-                                .padding(.leading, 52)
+                        if index < min(store.recentTransactions.count, 3) - 1 {
+                            BriefDivider()
                         }
                     }
                 }
@@ -134,99 +193,109 @@ struct OverviewView: View {
         }
     }
 
-    private var accountsStrip: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Accounts")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(ClarityColor.secondaryText)
-                .padding(.leading, 4)
-
-            if store.filteredAccounts.isEmpty {
-                Button {
-                    navigate(.accounts)
-                } label: {
-                    Text("Connect account")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(PrimaryClarityButtonStyle())
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(store.filteredAccounts.prefix(3)) { account in
-                        AccountRow(account: account)
-                    }
-                }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 8)
-                .clarityCard(radius: 22)
-            }
+    private var primarySentence: String {
+        if !store.hasFinancialData {
+            return "Connect your accounts first."
         }
+
+        if let mainInsight {
+            return mainInsight.title
+        }
+
+        return "You spent \(MoneyFormat.currency(store.monthlySpend)) this month."
     }
 
-    private var weeklySpendValues: [Double] {
-        let calendar = Calendar.current
-        let now = Date()
-        let startOfWeek = calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? now
-
-        return (0..<7).map { dayOffset in
-            guard let day = calendar.date(byAdding: .day, value: dayOffset, to: startOfWeek) else { return 0 }
-            return store.filteredTransactions
-                .filter { !$0.isIncome && calendar.isDate($0.date, inSameDayAs: day) }
-                .reduce(0) { $0 + abs($1.amount) }
+    private var monthCaption: String {
+        if store.incomeThisMonth > 0 {
+            let remaining = store.incomeThisMonth - store.monthlySpend
+            if remaining >= 0 {
+                return "\(MoneyFormat.currency(remaining)) left against income"
+            }
+            return "\(MoneyFormat.currency(abs(remaining))) over income"
         }
+
+        return store.reportingMonthTitle
+    }
+
+    private var nextActionTitle: String {
+        if !store.hasFinancialData {
+            return "Connect your first account"
+        }
+
+        return mainInsight?.action ?? "Review your spending"
+    }
+
+    private var nextActionCaption: String {
+        if !store.hasFinancialData {
+            return "Start with Plaid or import an Apple Card statement."
+        }
+
+        return mainInsight?.message ?? "Open Advice for the plain-English explanation."
     }
 }
 
-private struct SimpleBarChart: View {
-    var values: [Double]
-    var labels: [String]
+private struct BriefMetric: View {
+    var title: String
+    var value: String
 
     var body: some View {
-        GeometryReader { geometry in
-            let chartHeight = geometry.size.height - 30
-            let maxValue = Swift.max(values.max() ?? 0, 1)
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ClarityColor.secondaryText)
+                .lineLimit(1)
 
-            ZStack(alignment: .bottomLeading) {
-                VStack(spacing: 0) {
-                    ForEach([80, 60, 40, 20, 0], id: \.self) { label in
-                        HStack(spacing: 8) {
-                            Rectangle()
-                                .fill(ClarityColor.stroke)
-                                .frame(height: 1)
-                            Text("\(label)")
-                                .font(.caption2.weight(.medium))
-                                .foregroundStyle(ClarityColor.secondaryText)
-                                .frame(width: 22, alignment: .trailing)
-                        }
-                        if label != 0 {
-                            Spacer(minLength: 0)
-                        }
-                    }
-                }
-                .frame(height: chartHeight)
-
-                HStack(alignment: .bottom, spacing: 0) {
-                    ForEach(Array(values.enumerated()), id: \.offset) { index, value in
-                        VStack(spacing: 8) {
-                            Spacer(minLength: 0)
-
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Color.black)
-                                .frame(
-                                    width: 34,
-                                    height: Swift.max(2, chartHeight * CGFloat(value / maxValue) * 0.86)
-                                )
-                                .opacity(value == 0 ? 0 : 1)
-
-                            Text(labels.indices.contains(index) ? labels[index] : "")
-                                .font(.caption2.weight(.medium))
-                                .foregroundStyle(ClarityColor.secondaryText)
-                                .frame(height: 18)
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
-                }
-                .padding(.trailing, 34)
-            }
+            Text(value)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(ClarityColor.primaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
         }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(ClarityColor.panelElevated)
+        )
+    }
+}
+
+private struct BriefDivider: View {
+    var body: some View {
+        Divider()
+            .overlay(ClarityColor.stroke)
+    }
+}
+
+private struct LearningRow: View {
+    var symbolName: String
+    var title: String
+    var value: String
+    var caption: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            IconBadge(symbolName: symbolName)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(ClarityColor.primaryText)
+
+                Text(caption)
+                    .font(.caption)
+                    .foregroundStyle(ClarityColor.secondaryText)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            Text(value)
+                .font(.headline.weight(.bold))
+                .foregroundStyle(ClarityColor.primaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .padding(.vertical, 12)
     }
 }

@@ -67,7 +67,7 @@ enum StatementImportService {
             }
 
             let dateText = match[0]
-            let merchant = cleanupMerchant(match[1])
+            let merchant = MerchantNameCleaner.clean(match[1])
             let amountText = match[2].replacingOccurrences(of: ",", with: "")
             guard let amount = Double(amountText), let date = parseDate(dateText) else {
                 continue
@@ -129,12 +129,6 @@ enum StatementImportService {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "MMM d yyyy"
         return formatter.date(from: "\(text) \(currentYear)")
-    }
-
-    private static func cleanupMerchant(_ merchant: String) -> String {
-        merchant
-            .replacingOccurrences(of: #"(?i)\s{2,}"#, with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func resolveCategory(for merchant: String) -> TransactionCategory {

@@ -1,10 +1,16 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 struct SettingsView: View {
     @Bindable var store: FinanceStore
     @State private var clientID = ""
     @State private var sandboxSecret = ""
     @State private var productionSecret = ""
+    @State private var linkCustomizationName = ""
 
     var body: some View {
         ScrollView {
@@ -47,11 +53,27 @@ struct SettingsView: View {
                             .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(ClarityColor.panelElevated))
                     }
 
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Plaid Link customization")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(ClarityColor.secondaryText)
+
+                        TextField("Dashboard customization name", text: $linkCustomizationName)
+                            .textFieldStyle(.plain)
+                            .padding(13)
+                            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(ClarityColor.panelElevated))
+
+                        Text("In Plaid Dashboard, use a Link Customization where Account Select is \"Enabled for multiple accounts\", not \"Enabled for all accounts\". Then enter the exact customization name here.")
+                            .font(.caption)
+                            .foregroundStyle(ClarityColor.secondaryText)
+                    }
+
                     Button {
                         store.saveCredentials(
                             clientID: clientID,
                             sandboxSecret: sandboxSecret,
-                            productionSecret: productionSecret
+                            productionSecret: productionSecret,
+                            linkCustomizationName: linkCustomizationName
                         )
                     } label: {
                         Label("Save credentials", systemImage: "key.fill")
@@ -65,6 +87,11 @@ struct SettingsView: View {
                 }
                 .padding(18)
                 .clarityCard(radius: 20)
+
+                VStack(alignment: .leading, spacing: 14) {
+                    SectionHeader(title: "Accounts")
+                    AccountsContent(store: store, showsTitle: false, showsStatusAndDiagnostics: false)
+                }
 
                 VStack(alignment: .leading, spacing: 14) {
                     SectionHeader(title: "Actions")
@@ -100,15 +127,36 @@ struct SettingsView: View {
                 if let lastErrorMessage = store.lastErrorMessage {
                     StatusBanner(message: lastErrorMessage, isError: true)
                 }
+
+                PlaidDiagnosticsCard(
+                    logText: store.diagnosticsText,
+                    copy: {
+                        copyDiagnostics(store.diagnosticsText)
+                        store.recordDiagnostic("Diagnostics copied to clipboard.")
+                    },
+                    clear: {
+                        store.clearDiagnostics()
+                    }
+                )
             }
             .padding(24)
-            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: 900, alignment: .leading)
         }
         .onAppear {
             clientID = store.credentials.clientID
             sandboxSecret = store.credentials.sandboxSecret
             productionSecret = store.credentials.productionSecret
+            linkCustomizationName = store.credentials.linkCustomizationName
         }
+    }
+
+    private func copyDiagnostics(_ text: String) {
+        #if os(iOS)
+        UIPasteboard.general.string = text
+        #elseif os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        #endif
     }
 }
 

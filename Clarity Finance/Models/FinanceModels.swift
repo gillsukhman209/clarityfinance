@@ -2,7 +2,7 @@ import Foundation
 
 enum AppSection: String, CaseIterable, Identifiable {
     case overview
-    case accounts
+    case coach
     case transactions
     case budget
     case subscriptions
@@ -13,11 +13,11 @@ enum AppSection: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .overview: "Overview"
-        case .accounts: "Accounts"
-        case .transactions: "Transactions"
+        case .overview: "Today"
+        case .coach: "Advice"
+        case .transactions: "Activity"
         case .budget: "Budget"
-        case .subscriptions: "Subscriptions"
+        case .subscriptions: "Recurring"
         case .netWorth: "Net Worth"
         case .settings: "Settings"
         }
@@ -26,7 +26,7 @@ enum AppSection: String, CaseIterable, Identifiable {
     var symbolName: String {
         switch self {
         case .overview: "house.fill"
-        case .accounts: "wallet.pass.fill"
+        case .coach: "sparkles"
         case .transactions: "list.bullet.rectangle.portrait.fill"
         case .budget: "chart.pie.fill"
         case .subscriptions: "calendar.badge.clock"
@@ -162,6 +162,37 @@ struct FinanceTransaction: Identifiable, Codable, Hashable {
     }
 }
 
+enum RecurringChargeKind: String, Codable, Hashable {
+    case subscription
+    case bill
+
+    var title: String {
+        switch self {
+        case .subscription: "Subscription"
+        case .bill: "Bill"
+        }
+    }
+
+    var pluralTitle: String {
+        switch self {
+        case .subscription: "Subscriptions"
+        case .bill: "Bills"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .subscription: "calendar.badge.clock"
+        case .bill: "doc.text.fill"
+        }
+    }
+}
+
+enum RecurringChargeSource: String, Codable, Hashable {
+    case plaid
+    case localLegacy
+}
+
 struct SubscriptionItem: Identifiable, Codable, Hashable {
     var id: String
     var merchantName: String
@@ -169,6 +200,100 @@ struct SubscriptionItem: Identifiable, Codable, Hashable {
     var monthlyAmount: Double
     var nextExpectedDate: Date
     var accountID: String?
+    var recurringKind: RecurringChargeKind
+    var source: RecurringChargeSource
+    var frequency: String
+    var status: String
+    var lastAmount: Double
+    var averageAmount: Double
+    var lastDate: Date?
+    var streamDescription: String
+    var isActive: Bool
+
+    var displayName: String {
+        let cleanedMerchant = MerchantNameCleaner.clean(merchantName)
+        if cleanedMerchant != "Unknown Merchant" {
+            return cleanedMerchant
+        }
+
+        let cleanedDescription = MerchantNameCleaner.clean(streamDescription)
+        if cleanedDescription != "Unknown Merchant" {
+            return cleanedDescription
+        }
+
+        return "Recurring charge"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case merchantName
+        case category
+        case monthlyAmount
+        case nextExpectedDate
+        case accountID
+        case recurringKind
+        case source
+        case frequency
+        case status
+        case lastAmount
+        case averageAmount
+        case lastDate
+        case streamDescription
+        case isActive
+    }
+
+    init(
+        id: String,
+        merchantName: String,
+        category: TransactionCategory,
+        monthlyAmount: Double,
+        nextExpectedDate: Date,
+        accountID: String?,
+        recurringKind: RecurringChargeKind = .subscription,
+        source: RecurringChargeSource = .localLegacy,
+        frequency: String = "",
+        status: String = "",
+        lastAmount: Double = 0,
+        averageAmount: Double = 0,
+        lastDate: Date? = nil,
+        streamDescription: String = "",
+        isActive: Bool = true
+    ) {
+        self.id = id
+        self.merchantName = merchantName
+        self.category = category
+        self.monthlyAmount = monthlyAmount
+        self.nextExpectedDate = nextExpectedDate
+        self.accountID = accountID
+        self.recurringKind = recurringKind
+        self.source = source
+        self.frequency = frequency
+        self.status = status
+        self.lastAmount = lastAmount
+        self.averageAmount = averageAmount
+        self.lastDate = lastDate
+        self.streamDescription = streamDescription
+        self.isActive = isActive
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        merchantName = try container.decode(String.self, forKey: .merchantName)
+        category = try container.decode(TransactionCategory.self, forKey: .category)
+        monthlyAmount = try container.decode(Double.self, forKey: .monthlyAmount)
+        nextExpectedDate = try container.decode(Date.self, forKey: .nextExpectedDate)
+        accountID = try container.decodeIfPresent(String.self, forKey: .accountID)
+        recurringKind = try container.decodeIfPresent(RecurringChargeKind.self, forKey: .recurringKind) ?? .subscription
+        source = try container.decodeIfPresent(RecurringChargeSource.self, forKey: .source) ?? .localLegacy
+        frequency = try container.decodeIfPresent(String.self, forKey: .frequency) ?? ""
+        status = try container.decodeIfPresent(String.self, forKey: .status) ?? ""
+        lastAmount = try container.decodeIfPresent(Double.self, forKey: .lastAmount) ?? 0
+        averageAmount = try container.decodeIfPresent(Double.self, forKey: .averageAmount) ?? monthlyAmount
+        lastDate = try container.decodeIfPresent(Date.self, forKey: .lastDate)
+        streamDescription = try container.decodeIfPresent(String.self, forKey: .streamDescription) ?? ""
+        isActive = try container.decodeIfPresent(Bool.self, forKey: .isActive) ?? true
+    }
 }
 
 struct BudgetCategory: Identifiable, Codable, Hashable {
@@ -200,6 +325,7 @@ struct PlaidConnection: Identifiable, Codable, Hashable {
     var institutionID: String
     var institutionName: String
     var accessToken: String
+    var environment: PlaidEnvironment
     var cursor: String?
     var connectedAt: Date
     var lastSyncedAt: Date?
@@ -210,6 +336,7 @@ struct PlaidConnection: Identifiable, Codable, Hashable {
         case institutionID
         case institutionName
         case accessToken
+        case environment
         case cursor
         case connectedAt
         case lastSyncedAt
@@ -221,6 +348,7 @@ struct PlaidConnection: Identifiable, Codable, Hashable {
         institutionID: String,
         institutionName: String,
         accessToken: String,
+        environment: PlaidEnvironment,
         cursor: String?,
         connectedAt: Date,
         lastSyncedAt: Date?
@@ -230,6 +358,7 @@ struct PlaidConnection: Identifiable, Codable, Hashable {
         self.institutionID = institutionID
         self.institutionName = institutionName
         self.accessToken = accessToken
+        self.environment = environment
         self.cursor = cursor
         self.connectedAt = connectedAt
         self.lastSyncedAt = lastSyncedAt
@@ -242,6 +371,8 @@ struct PlaidConnection: Identifiable, Codable, Hashable {
         institutionID = try container.decodeIfPresent(String.self, forKey: .institutionID) ?? "ins_109508"
         institutionName = try container.decode(String.self, forKey: .institutionName)
         accessToken = try container.decode(String.self, forKey: .accessToken)
+        environment = try container.decodeIfPresent(PlaidEnvironment.self, forKey: .environment)
+            ?? (accessToken.contains("access-production") ? .production : .sandbox)
         cursor = try container.decodeIfPresent(String.self, forKey: .cursor)
         connectedAt = try container.decode(Date.self, forKey: .connectedAt)
         lastSyncedAt = try container.decodeIfPresent(Date.self, forKey: .lastSyncedAt)
@@ -255,6 +386,8 @@ struct FinanceDataSet: Codable {
     var budgets: [BudgetCategory]
     var netWorthSnapshots: [NetWorthSnapshot]
     var connections: [PlaidConnection]
+    var ignoredSubscriptionKeys: Set<String>
+    var recurringChargeCorrections: [String: RecurringChargeCorrection]
 
     static let empty = FinanceDataSet(
         accounts: [],
@@ -262,8 +395,59 @@ struct FinanceDataSet: Codable {
         subscriptions: [],
         budgets: [],
         netWorthSnapshots: [],
-        connections: []
+        connections: [],
+        ignoredSubscriptionKeys: [],
+        recurringChargeCorrections: [:]
     )
+
+    enum CodingKeys: String, CodingKey {
+        case accounts
+        case transactions
+        case subscriptions
+        case budgets
+        case netWorthSnapshots
+        case connections
+        case ignoredSubscriptionKeys
+        case recurringChargeCorrections
+    }
+
+    init(
+        accounts: [FinancialAccount],
+        transactions: [FinanceTransaction],
+        subscriptions: [SubscriptionItem],
+        budgets: [BudgetCategory],
+        netWorthSnapshots: [NetWorthSnapshot],
+        connections: [PlaidConnection],
+        ignoredSubscriptionKeys: Set<String> = [],
+        recurringChargeCorrections: [String: RecurringChargeCorrection] = [:]
+    ) {
+        self.accounts = accounts
+        self.transactions = transactions
+        self.subscriptions = subscriptions
+        self.budgets = budgets
+        self.netWorthSnapshots = netWorthSnapshots
+        self.connections = connections
+        self.ignoredSubscriptionKeys = ignoredSubscriptionKeys
+        self.recurringChargeCorrections = recurringChargeCorrections
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        accounts = try container.decodeIfPresent([FinancialAccount].self, forKey: .accounts) ?? []
+        transactions = try container.decodeIfPresent([FinanceTransaction].self, forKey: .transactions) ?? []
+        subscriptions = try container.decodeIfPresent([SubscriptionItem].self, forKey: .subscriptions) ?? []
+        budgets = try container.decodeIfPresent([BudgetCategory].self, forKey: .budgets) ?? []
+        netWorthSnapshots = try container.decodeIfPresent([NetWorthSnapshot].self, forKey: .netWorthSnapshots) ?? []
+        connections = try container.decodeIfPresent([PlaidConnection].self, forKey: .connections) ?? []
+        ignoredSubscriptionKeys = try container.decodeIfPresent(Set<String>.self, forKey: .ignoredSubscriptionKeys) ?? []
+        recurringChargeCorrections = try container.decodeIfPresent([String: RecurringChargeCorrection].self, forKey: .recurringChargeCorrections) ?? [:]
+    }
+}
+
+enum RecurringChargeCorrection: String, Codable, Hashable {
+    case subscription
+    case bill
+    case ignored
 }
 
 struct PlaidSandboxInstitution: Identifiable, Hashable {

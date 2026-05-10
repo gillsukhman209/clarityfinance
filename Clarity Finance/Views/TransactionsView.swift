@@ -4,6 +4,7 @@ struct TransactionsView: View {
     @Bindable var store: FinanceStore
     @State private var searchText = ""
     @State private var selectedCategory: TransactionCategory?
+    @State private var selectedTransaction: FinanceTransaction?
 
     var filteredTransactions: [FinanceTransaction] {
         store.recentTransactions.filter { transaction in
@@ -56,10 +57,16 @@ struct TransactionsView: View {
                         )
                     } else {
                         ForEach(filteredTransactions) { transaction in
-                            TransactionRow(
-                                transaction: transaction,
-                                account: store.account(for: transaction.accountID)
-                            )
+                            Button {
+                                selectedTransaction = transaction
+                            } label: {
+                                TransactionRow(
+                                    transaction: transaction,
+                                    account: store.account(for: transaction.accountID)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .contentShape(Rectangle())
                         }
                     }
                 }
@@ -68,6 +75,12 @@ struct TransactionsView: View {
             }
             .padding(24)
             .frame(maxWidth: 900, alignment: .leading)
+        }
+        .sheet(item: $selectedTransaction) { transaction in
+            TransactionDetailView(
+                transaction: transaction,
+                account: store.account(for: transaction.accountID)
+            )
         }
     }
 }
