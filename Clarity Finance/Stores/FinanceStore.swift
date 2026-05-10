@@ -606,26 +606,63 @@ final class FinanceStore {
     }
 
     func importAppleCardStatement(from url: URL) {
+        importAppleCardStatements(from: [url])
+    }
+
+    func importAppleCardStatements(from urls: [URL]) {
+        guard !urls.isEmpty else { return }
+
         do {
-            let isScoped = url.startAccessingSecurityScopedResource()
-            defer {
-                if isScoped {
-                    url.stopAccessingSecurityScopedResource()
+            var results: [StatementImportResult] = []
+
+            for url in urls {
+                let isScoped = url.startAccessingSecurityScopedResource()
+                do {
+                    defer {
+                        if isScoped {
+                            url.stopAccessingSecurityScopedResource()
+                        }
+                    }
+
+                    results.append(try StatementImportService.importAppleCardStatement(from: url))
                 }
             }
 
-            let result = try StatementImportService.importAppleCardStatement(from: url)
-            upsert(accounts: [result.account])
-            upsert(transactions: result.transactions)
+            guard !results.isEmpty else {
+                lastErrorMessage = "No Apple Card PDF statements were selected."
+                return
+            }
+
+            let existingAppleAccount = data.accounts.first { $0.id == "manual-apple-card" }
+            let existingLatestDate = data.transactions
+                .filter { $0.accountID == "manual-apple-card" }
+                .map(\.date)
+                .max()
+            let newestImport = results.max { $0.latestTransactionDate < $1.latestTransactionDate }
+            let importedTransactions = results.flatMap(\.transactions)
+            var account = newestImport?.account
+            if let existingAppleAccount,
+               let existingLatestDate,
+               let newestImport,
+               existingLatestDate > newestImport.latestTransactionDate {
+                account = existingAppleAccount
+            }
+
+            data.removedAccountIDs.remove("manual-apple-card")
+            if let account {
+                upsert(accounts: [account])
+            }
+            upsert(transactions: importedTransactions)
             rebuildDerivedData()
             save()
             Task { await analyzeSpendingWithAI(onlyMissing: true) }
-            let importedExpenseTotal = result.transactions
+            let importedExpenseTotal = importedTransactions
                 .filter { !$0.isIncome }
                 .reduce(0) { $0 + abs($1.amount) }
-            statusMessage = "Imported \(result.transactions.count) Apple Card PDF transactions."
+            let statementText = urls.count == 1 ? "statement" : "statements"
+            statusMessage = "Imported \(urls.count) Apple Card PDF \(statementText), \(importedTransactions.count) transaction(s)."
             lastErrorMessage = nil
-            recordDiagnostic("Apple Card PDF imported. transactions=\(result.transactions.count), expenseTotal=\(MoneyFormat.currency(importedExpenseTotal)), reportingMonth=\(reportingMonthTitle), monthlySpend=\(MoneyFormat.currency(monthlySpend)).")
+            recordDiagnostic("Apple Card PDF imported. statements=\(urls.count), transactions=\(importedTransactions.count), expenseTotal=\(MoneyFormat.currency(importedExpenseTotal)), reportingMonth=\(reportingMonthTitle), monthlySpend=\(MoneyFormat.currency(monthlySpend)).")
         } catch {
             lastErrorMessage = error.localizedDescription
         }

@@ -123,6 +123,7 @@ struct SubscriptionDetailView: View {
 
     var subscription: SubscriptionItem
     var account: FinancialAccount?
+    var countedTransactions: [FinanceTransaction] = []
     var recentTransactions: [FinanceTransaction]
     var intelligence: SubscriptionIntelligence?
     var setCorrection: ((RecurringChargeCorrection?) -> Void)?
@@ -142,7 +143,7 @@ struct SubscriptionDetailView: View {
                     VStack(spacing: 0) {
                         DetailRow(title: "Monthly amount", value: MoneyFormat.currency(subscription.monthlyAmount))
                         DetailDivider()
-                        DetailRow(title: "Next expected", value: subscription.nextExpectedDate.formatted(.dateTime.month(.wide).day().year()))
+                        DetailRow(title: "Next expected", value: nextExpectedText)
                         DetailDivider()
                         DetailRow(title: "Account", value: account?.displayName ?? "Unknown account")
                         DetailDivider()
@@ -230,17 +231,40 @@ struct SubscriptionDetailView: View {
                         .clarityCard(radius: 20)
                     }
 
-                    if !recentTransactions.isEmpty {
+                    if !countedTransactions.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
-                            Text("Recent charges")
+                            Text("Charges counted")
                                 .font(.headline.weight(.semibold))
                                 .foregroundStyle(ClarityColor.primaryText)
 
                             VStack(spacing: 0) {
-                                ForEach(Array(recentTransactions.enumerated()), id: \.element.id) { index, transaction in
+                                ForEach(Array(countedTransactions.enumerated()), id: \.element.id) { index, transaction in
                                     MiniTransactionRow(transaction: transaction)
 
-                                    if index < recentTransactions.count - 1 {
+                                    if index < countedTransactions.count - 1 {
+                                        DetailDivider()
+                                    }
+                                }
+                            }
+                        }
+                        .padding(18)
+                        .clarityCard(radius: 20)
+                    }
+
+                    let otherTransactions = recentTransactions.filter { related in
+                        !countedTransactions.contains { $0.id == related.id }
+                    }
+                    if !otherTransactions.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Other from this merchant")
+                                .font(.headline.weight(.semibold))
+                                .foregroundStyle(ClarityColor.primaryText)
+
+                            VStack(spacing: 0) {
+                                ForEach(Array(otherTransactions.prefix(12).enumerated()), id: \.element.id) { index, transaction in
+                                    MiniTransactionRow(transaction: transaction)
+
+                                    if index < min(otherTransactions.count, 12) - 1 {
                                         DetailDivider()
                                     }
                                 }
@@ -266,6 +290,15 @@ struct SubscriptionDetailView: View {
                 }
             }
         }
+    }
+
+    private var nextExpectedText: String {
+        let formattedDate = subscription.nextExpectedDate.formatted(.dateTime.month(.wide).day().year())
+        guard subscription.nextExpectedDate < Calendar.current.startOfDay(for: Date()) else {
+            return formattedDate
+        }
+
+        return "Overdue since \(formattedDate)"
     }
 }
 

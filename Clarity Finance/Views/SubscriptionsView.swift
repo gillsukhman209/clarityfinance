@@ -3,6 +3,7 @@ import SwiftUI
 struct SubscriptionsView: View {
     @Bindable var store: FinanceStore
     @State private var selectedSubscription: SubscriptionIntelligence?
+    @State private var isInactiveExpanded = false
 
     var body: some View {
         let model = SubscriptionScreenModel(items: store.subscriptionIntelligence)
@@ -16,9 +17,9 @@ struct SubscriptionsView: View {
                 }
 
                 MetricCard(
-                    title: "Recurring",
+                    title: "Confirmed recurring",
                     value: MoneyFormat.currency(model.totalMonthlyRecurring),
-                    caption: "\(model.visibleItems.count) charge(s), \(model.activeItems.count) active",
+                    caption: "\(model.confirmedItems.count) confirmed, \(model.reviewItems.count) need review",
                     symbolName: "calendar.badge.clock"
                 )
 
@@ -49,12 +50,21 @@ struct SubscriptionsView: View {
                         emptyMessage: "No recurring bills found yet."
                     )
 
-                    if !model.inactiveItems.isEmpty {
+                    if !model.reviewItems.isEmpty {
                         recurringSection(
+                            title: "Needs review",
+                            total: model.reviewTotal,
+                            items: model.reviewItems,
+                            emptyMessage: ""
+                        )
+                    }
+
+                    if !model.inactiveItems.isEmpty {
+                        collapsibleRecurringSection(
                             title: "Inactive",
                             total: model.inactiveTotal,
                             items: model.inactiveItems,
-                            emptyMessage: ""
+                            isExpanded: $isInactiveExpanded
                         )
                     }
 
@@ -80,6 +90,7 @@ struct SubscriptionsView: View {
             SubscriptionDetailView(
                 subscription: item.subscription,
                 account: item.account,
+                countedTransactions: FinanceCoachEngine.matchingTransactions(for: item.subscription, in: store.filteredTransactions),
                 recentTransactions: FinanceCoachEngine.relatedTransactions(for: item.subscription, in: store.filteredTransactions),
                 intelligence: item
             ) { correction in
@@ -107,6 +118,57 @@ struct SubscriptionsView: View {
                     .foregroundStyle(ClarityColor.secondaryText)
                     .padding(.vertical, 8)
             } else {
+                ForEach(items) { item in
+                    Button {
+                        selectedSubscription = item
+                    } label: {
+                        SubscriptionRow(
+                            subscription: item.subscription,
+                            account: item.account,
+                            statusLine: "\(item.statusLine) • \(MoneyFormat.currency(item.totalPaidThisYear)) this year",
+                            isIgnored: item.isIgnored
+                        ) {
+                            correctionMenu(for: item)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
+                }
+            }
+        }
+        .padding(18)
+        .clarityCard(radius: 20)
+    }
+
+    private func collapsibleRecurringSection(
+        title: String,
+        total: Double,
+        items: [SubscriptionIntelligence],
+        isExpanded: Binding<Bool>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                withAnimation(.snappy(duration: 0.18)) {
+                    isExpanded.wrappedValue.toggle()
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Text("\(title) • \(MoneyFormat.currency(total))")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(ClarityColor.primaryText)
+
+                    Spacer()
+
+                    Image(systemName: "chevron.down")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(ClarityColor.secondaryText)
+                        .rotationEffect(.degrees(isExpanded.wrappedValue ? 180 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded.wrappedValue {
                 ForEach(items) { item in
                     Button {
                         selectedSubscription = item
@@ -164,12 +226,15 @@ private struct SubscriptionScreenModel {
     var allItems: [SubscriptionIntelligence]
     var visibleItems: [SubscriptionIntelligence]
     var activeItems: [SubscriptionIntelligence]
+    var confirmedItems: [SubscriptionIntelligence]
+    var reviewItems: [SubscriptionIntelligence]
     var inactiveItems: [SubscriptionIntelligence]
     var subscriptionItems: [SubscriptionIntelligence]
     var billItems: [SubscriptionIntelligence]
     var ignoredItems: [SubscriptionIntelligence]
     var subscriptionsTotal: Double
     var billsTotal: Double
+    var reviewTotal: Double
     var inactiveTotal: Double
     var ignoredTotal: Double
     var totalMonthlyRecurring: Double
@@ -178,15 +243,18 @@ private struct SubscriptionScreenModel {
         allItems = items
         visibleItems = items.filter { !$0.isIgnored }
         activeItems = visibleItems.filter { $0.subscription.isActive }
+        confirmedItems = activeItems.filter { !$0.needsReview }
+        reviewItems = activeItems.filter(\.needsReview)
         inactiveItems = visibleItems.filter { !$0.subscription.isActive }
-        subscriptionItems = activeItems.filter { $0.subscription.recurringKind == .subscription }
-        billItems = activeItems.filter { $0.subscription.recurringKind == .bill }
+        subscriptionItems = confirmedItems.filter { $0.subscription.recurringKind == .subscription }
+        billItems = confirmedItems.filter { $0.subscription.recurringKind == .bill }
         ignoredItems = items.filter(\.isIgnored)
         subscriptionsTotal = subscriptionItems.reduce(0) { $0 + $1.subscription.monthlyAmount }
         billsTotal = billItems.reduce(0) { $0 + $1.subscription.monthlyAmount }
+        reviewTotal = reviewItems.reduce(0) { $0 + $1.subscription.monthlyAmount }
         inactiveTotal = inactiveItems.reduce(0) { $0 + $1.subscription.monthlyAmount }
         ignoredTotal = ignoredItems.reduce(0) { $0 + $1.subscription.monthlyAmount }
-        totalMonthlyRecurring = activeItems.reduce(0) { $0 + $1.subscription.monthlyAmount }
+        totalMonthlyRecurring = confirmedItems.reduce(0) { $0 + $1.subscription.monthlyAmount }
     }
 }
 

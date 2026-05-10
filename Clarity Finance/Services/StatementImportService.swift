@@ -4,6 +4,7 @@ import PDFKit
 struct StatementImportResult {
     var account: FinancialAccount
     var transactions: [FinanceTransaction]
+    var latestTransactionDate: Date
 }
 
 enum StatementImportService {
@@ -20,10 +21,12 @@ enum StatementImportService {
             }
         }
 
-        let transactions = parseTransactions(from: text)
+        let fallbackYear = parseStatementYear(from: text)
+        let transactions = parseTransactions(from: text, fallbackYear: fallbackYear)
         guard !transactions.isEmpty else {
             throw StatementImportError.noTransactionsFound
         }
+        let latestTransactionDate = transactions.map(\.date).max() ?? Date()
 
         let balance = parseStatementBalance(from: text) ?? transactions
             .filter { !$0.isIncome }
@@ -41,21 +44,21 @@ enum StatementImportService {
             isManual: true
         )
 
-        return StatementImportResult(account: account, transactions: transactions)
+        return StatementImportResult(account: account, transactions: transactions, latestTransactionDate: latestTransactionDate)
     }
 
-    private static func parseTransactions(from text: String) -> [FinanceTransaction] {
+    private static func parseTransactions(from text: String, fallbackYear: Int) -> [FinanceTransaction] {
         let lines = text
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
         return lines.compactMap { line in
-            parseTransactionLine(line)
+            parseTransactionLine(line, fallbackYear: fallbackYear)
         }
     }
 
-    private static func parseTransactionLine(_ line: String) -> FinanceTransaction? {
+    private static func parseTransactionLine(_ line: String, fallbackYear: Int) -> FinanceTransaction? {
         let patterns = [
             #"^(\d{1,2}/\d{1,2}(?:/\d{2,4})?)\s+(.+?)\s+\$?(-?\d{1,3}(?:,\d{3})*\.\d{2})$"#,
             #"^([A-Z][a-z]{2}\s+\d{1,2})\s+(.+?)\s+\$?(-?\d{1,3}(?:,\d{3})*\.\d{2})$"#
@@ -69,7 +72,7 @@ enum StatementImportService {
             let dateText = match[0]
             let merchant = MerchantNameCleaner.clean(match[1])
             let amountText = match[2].replacingOccurrences(of: ",", with: "")
-            guard let amount = Double(amountText), let date = parseDate(dateText) else {
+            guard let amount = Double(amountText), let date = parseDate(dateText, fallbackYear: fallbackYear) else {
                 continue
             }
 
@@ -106,9 +109,25 @@ enum StatementImportService {
         return nil
     }
 
-    private static func parseDate(_ text: String) -> Date? {
+    private static func parseStatementYear(from text: String) -> Int {
+        let currentYear = Calendar.current.component(.year, from: Date())
+        guard let regex = try? NSRegularExpression(pattern: #"20\d{2}"#) else {
+            return currentYear
+        }
+
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        let years = regex.matches(in: text, range: range).compactMap { match -> Int? in
+            guard let range = Range(match.range, in: text) else { return nil }
+            return Int(text[range])
+        }
+
+        return Dictionary(grouping: years, by: { $0 })
+            .max { lhs, rhs in lhs.value.count < rhs.value.count }?
+            .key ?? currentYear
+    }
+
+    private static func parseDate(_ text: String, fallbackYear: Int) -> Date? {
         let calendar = Calendar.current
-        let currentYear = calendar.component(.year, from: Date())
 
         let slashFormats = ["M/d/yyyy", "M/d/yy", "M/d"]
         for format in slashFormats {
@@ -118,7 +137,7 @@ enum StatementImportService {
             if let parsed = formatter.date(from: text) {
                 if format == "M/d" {
                     var components = calendar.dateComponents([.month, .day], from: parsed)
-                    components.year = currentYear
+                    components.year = fallbackYear
                     return calendar.date(from: components)
                 }
                 return parsed
@@ -128,7 +147,7 @@ enum StatementImportService {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "MMM d yyyy"
-        return formatter.date(from: "\(text) \(currentYear)")
+        return formatter.date(from: "\(text) \(fallbackYear)")
     }
 
     private static func resolveCategory(for merchant: String) -> TransactionCategory {

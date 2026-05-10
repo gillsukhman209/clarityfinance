@@ -63,7 +63,14 @@ struct SubscriptionIntelligence: Identifiable, Hashable {
         correction == .ignored
     }
 
+    var needsReview: Bool {
+        guard correction == nil else { return false }
+        if subscription.status.localizedCaseInsensitiveContains("needs review") { return true }
+        return chargeCount < 2
+    }
+
     var confidenceLabel: String {
+        if needsReview { return "Needs review" }
         if confidence >= 0.84 { return "High confidence" }
         if confidence >= 0.58 { return "Medium confidence" }
         return "Needs review"
@@ -74,6 +81,7 @@ struct SubscriptionIntelligence: Identifiable, Hashable {
         if correction == .subscription { return "Marked subscription by you" }
         if correction == .bill { return "Marked bill by you" }
         if !subscription.isActive { return "Inactive" }
+        if needsReview { return "Needs review" }
         return subscription.frequency.isEmpty ? "Recurring" : subscription.frequency.lowercased().replacingOccurrences(of: "_", with: " ")
     }
 }

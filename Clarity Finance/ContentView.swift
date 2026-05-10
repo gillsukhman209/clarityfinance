@@ -49,12 +49,11 @@ struct ContentView: View {
         .fileImporter(
             isPresented: $isImportingStatement,
             allowedContentTypes: [.pdf],
-            allowsMultipleSelection: false
+            allowsMultipleSelection: true
         ) { result in
             switch result {
             case .success(let urls):
-                guard let url = urls.first else { return }
-                store.importAppleCardStatement(from: url)
+                store.importAppleCardStatements(from: urls)
             case .failure(let error):
                 store.lastErrorMessage = error.localizedDescription
             }
@@ -395,7 +394,7 @@ private struct SettingsTab: View {
                 Button {
                     isImportingStatement = true
                 } label: {
-                    Label("Apple Card PDF", systemImage: "doc.badge.plus")
+                    Label("Apple Card PDFs", systemImage: "doc.badge.plus")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(SecondaryClarityButtonStyle())

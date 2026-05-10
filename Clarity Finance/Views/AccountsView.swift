@@ -176,10 +176,14 @@ struct AccountsContent: View {
                 VStack(alignment: .leading, spacing: 14) {
                     SectionHeader(title: "Manual statements")
 
+                    Text("Select two or three monthly Apple Card PDFs at once. Clarity combines them into one Apple Card account so recurring charges are more accurate.")
+                        .font(.subheadline)
+                        .foregroundStyle(ClarityColor.secondaryText)
+
                     Button {
                         isImportingStatement = true
                     } label: {
-                        Label("Import Apple Card PDF", systemImage: "doc.badge.plus")
+                        Label("Import Apple Card PDFs", systemImage: "doc.badge.plus")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(SecondaryClarityButtonStyle())
@@ -211,12 +215,11 @@ struct AccountsContent: View {
         .fileImporter(
             isPresented: $isImportingStatement,
             allowedContentTypes: [.pdf],
-            allowsMultipleSelection: false
+            allowsMultipleSelection: true
         ) { result in
             switch result {
             case .success(let urls):
-                guard let url = urls.first else { return }
-                store.importAppleCardStatement(from: url)
+                store.importAppleCardStatements(from: urls)
             case .failure(let error):
                 store.lastErrorMessage = error.localizedDescription
             }
