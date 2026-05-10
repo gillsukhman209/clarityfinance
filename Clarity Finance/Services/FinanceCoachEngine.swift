@@ -380,7 +380,7 @@ enum FinanceCoachEngine {
     }
 
     static func subscriptionKey(_ subscription: SubscriptionItem) -> String {
-        if subscription.source == .plaid {
+        if subscription.source == .plaid || subscription.source == .ai {
             return subscription.id
         }
 
@@ -388,15 +388,25 @@ enum FinanceCoachEngine {
     }
 
     static func matchingTransactions(for subscription: SubscriptionItem, in transactions: [FinanceTransaction]) -> [FinanceTransaction] {
-        if let merchantKey = aiMerchantKey(for: subscription) {
+        if let recurringKey = aiRecurringKey(for: subscription) {
             return transactions
                 .filter { transaction in
                     guard !transaction.isIncome else { return false }
                     if let accountID = subscription.accountID, transaction.accountID != accountID {
                         return false
                     }
-                    return MerchantNameCleaner.canonicalKey(for: transaction.merchantName) == merchantKey ||
-                        MerchantNameCleaner.canonicalKey(for: transaction.originalName) == merchantKey
+                    let transactionKeys = [
+                        MerchantNameCleaner.canonicalKey(for: transaction.merchantName),
+                        MerchantNameCleaner.canonicalKey(for: transaction.originalName)
+                    ]
+                    let matchesMerchant = transactionKeys.contains(recurringKey.merchantKey)
+                    guard matchesMerchant else { return false }
+
+                    if let amountCents = recurringKey.amountCents {
+                        return Self.amountCents(for: transaction) == amountCents
+                    }
+
+                    return true
                 }
                 .sorted { $0.date > $1.date }
         }
@@ -449,7 +459,7 @@ enum FinanceCoachEngine {
         ]
         let companyKeys = Set(companyNames.map { MerchantNameCleaner.canonicalKey(for: $0) }.filter { !$0.isEmpty })
         let displayNames = Set(companyNames.map { MerchantNameCleaner.canonicalDisplayName(for: $0) }.filter { !$0.isEmpty })
-        let aiKey = aiMerchantKey(for: subscription)
+        let aiKey = aiRecurringKey(for: subscription)?.merchantKey
 
         return transactions
             .filter { transaction in
@@ -483,12 +493,33 @@ enum FinanceCoachEngine {
     }
 
     private static func aiMerchantKey(for subscription: SubscriptionItem) -> String? {
+        aiRecurringKey(for: subscription)?.merchantKey
+    }
+
+    private static func aiRecurringKey(for subscription: SubscriptionItem) -> AIRecurringKey? {
         guard subscription.source == .ai else { return nil }
         let prefix = "ai-recurring-"
         guard subscription.id.hasPrefix(prefix) else {
-            return MerchantNameCleaner.canonicalKey(for: subscription.displayName)
+            return AIRecurringKey(merchantKey: MerchantNameCleaner.canonicalKey(for: subscription.displayName), amountCents: nil)
         }
-        return String(subscription.id.dropFirst(prefix.count))
+        let rawKey = String(subscription.id.dropFirst(prefix.count))
+        let marker = "--amount-"
+        guard let markerRange = rawKey.range(of: marker) else {
+            return AIRecurringKey(merchantKey: rawKey, amountCents: nil)
+        }
+
+        let merchantKey = String(rawKey[..<markerRange.lowerBound])
+        let amountText = String(rawKey[markerRange.upperBound...])
+        return AIRecurringKey(merchantKey: merchantKey, amountCents: Int(amountText))
+    }
+
+    private static func amountCents(for transaction: FinanceTransaction) -> Int {
+        Int((abs(transaction.amount) * 100).rounded())
+    }
+
+    private struct AIRecurringKey {
+        var merchantKey: String
+        var amountCents: Int?
     }
 
     private static func expenseTransactions(_ transactions: [FinanceTransaction], inMonthOf anchor: Date) -> [FinanceTransaction] {

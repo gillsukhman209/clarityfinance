@@ -803,7 +803,14 @@ final class FinanceStore {
                 transactionCount: sorted.count,
                 totalSpent: total,
                 averageAmount: total / Double(sorted.count),
-                latestDate: sorted[0].date
+                latestDate: sorted[0].date,
+                transactions: sorted.prefix(12).map {
+                    AITransactionSample(
+                        date: $0.date,
+                        amount: $0.amount,
+                        name: $0.originalName.isEmpty ? $0.merchantName : $0.originalName
+                    )
+                }
             )
         }
         .sorted { $0.totalSpent > $1.totalSpent }
@@ -959,10 +966,10 @@ final class FinanceStore {
             Self.merchantKey(for: transaction.merchantName)
         }
 
-        return grouped.compactMap { _, transactions -> SubscriptionItem? in
-            guard let latest = transactions.max(by: { $0.date < $1.date }) else { return nil }
+        return grouped.flatMap { _, transactions -> [SubscriptionItem] in
+            guard let latest = transactions.max(by: { $0.date < $1.date }) else { return [] }
             let merchantKey = Self.merchantKey(for: latest.merchantName)
-            guard let classification = data.merchantClassifications[merchantKey] else { return nil }
+            guard let classification = data.merchantClassifications[merchantKey] else { return [] }
 
             let recurringKind: RecurringChargeKind
             switch classification.kind {
@@ -971,33 +978,42 @@ final class FinanceStore {
             case .bill:
                 recurringKind = .bill
             default:
-                return nil
+                return []
             }
 
             let sorted = transactions.sorted { $0.date < $1.date }
-            let estimate = recurringEstimate(from: sorted)
-            let lastDate = latest.date
-            let nextDate = Calendar.current.date(byAdding: .day, value: estimate.cadenceDays, to: lastDate) ?? .daysFromNow(estimate.cadenceDays)
-            let activeCutoff = Calendar.current.date(byAdding: .day, value: -max(estimate.cadenceDays * 2, 45), to: Date()) ?? .daysAgo(75)
-            let accountIDs = Set(transactions.map(\.accountID))
-
-            return SubscriptionItem(
-                id: "ai-recurring-\(merchantKey)",
-                merchantName: MerchantNameCleaner.canonicalDisplayName(for: classification.displayName),
-                category: classification.category,
-                monthlyAmount: estimate.monthlyAmount,
-                nextExpectedDate: nextDate,
-                accountID: accountIDs.count == 1 ? latest.accountID : nil,
-                recurringKind: recurringKind,
-                source: .ai,
-                frequency: estimate.frequency,
-                status: classification.confidence >= 0.75 ? "High confidence" : "Needs review",
-                lastAmount: estimate.lastAmount,
-                averageAmount: estimate.averageAmount,
-                lastDate: lastDate,
-                streamDescription: classification.plainEnglish,
-                isActive: lastDate >= activeCutoff
+            let streams = recurringStreams(
+                from: sorted,
+                classification: classification,
+                recurringKind: recurringKind
             )
+
+            return streams.map { stream in
+                let streamLatest = stream.transactions.last ?? latest
+                let lastDate = streamLatest.date
+                let nextDate = Calendar.current.date(byAdding: .day, value: stream.estimate.cadenceDays, to: lastDate) ?? .daysFromNow(stream.estimate.cadenceDays)
+                let activeCutoff = Calendar.current.date(byAdding: .day, value: -max(stream.estimate.cadenceDays * 2, 45), to: Date()) ?? .daysAgo(75)
+                let accountIDs = Set(stream.transactions.map(\.accountID))
+                let displayName = stream.displayName ?? MerchantNameCleaner.canonicalDisplayName(for: classification.displayName)
+
+                return SubscriptionItem(
+                    id: stream.idSuffix.map { "ai-recurring-\(merchantKey)--\($0)" } ?? "ai-recurring-\(merchantKey)",
+                    merchantName: displayName,
+                    category: classification.category,
+                    monthlyAmount: stream.estimate.monthlyAmount,
+                    nextExpectedDate: nextDate,
+                    accountID: accountIDs.count == 1 ? streamLatest.accountID : nil,
+                    recurringKind: recurringKind,
+                    source: .ai,
+                    frequency: stream.estimate.frequency,
+                    status: stream.confidenceLabel,
+                    lastAmount: stream.estimate.lastAmount,
+                    averageAmount: stream.estimate.averageAmount,
+                    lastDate: lastDate,
+                    streamDescription: stream.note ?? classification.plainEnglish,
+                    isActive: lastDate >= activeCutoff
+                )
+            }
         }
         .sorted { lhs, rhs in
             if lhs.recurringKind != rhs.recurringKind {
@@ -1005,6 +1021,100 @@ final class FinanceStore {
             }
             return lhs.monthlyAmount > rhs.monthlyAmount
         }
+    }
+
+    private func recurringStreams(
+        from sortedTransactions: [FinanceTransaction],
+        classification: AIMerchantClassification,
+        recurringKind: RecurringChargeKind
+    ) -> [RecurringTransactionStream] {
+        guard !sortedTransactions.isEmpty else { return [] }
+
+        let amountGroups = Dictionary(grouping: sortedTransactions) { amountCents(for: $0) }
+        let repeatedAmountStreams = amountGroups
+            .compactMap { amountCents, transactions -> RecurringTransactionStream? in
+                let sorted = transactions.sorted { $0.date < $1.date }
+                guard isStrongRecurringAmountStream(sorted) else { return nil }
+
+                var estimate = recurringEstimate(from: sorted)
+                estimate.monthlyAmount = roundedMoney(sorted.last.map { abs($0.amount) } ?? estimate.monthlyAmount)
+
+                return RecurringTransactionStream(
+                    idSuffix: "amount-\(amountCents)",
+                    transactions: sorted,
+                    estimate: estimate,
+                    confidenceLabel: "High confidence",
+                    displayName: MerchantNameCleaner.canonicalDisplayName(for: classification.displayName),
+                    note: "Only the repeated \(MoneyFormat.currency(estimate.lastAmount)) charge is counted as recurring. Other \(classification.displayName) purchases stay in transaction history."
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.transactions.count != rhs.transactions.count {
+                    return lhs.transactions.count > rhs.transactions.count
+                }
+                return lhs.estimate.monthlyAmount > rhs.estimate.monthlyAmount
+            }
+
+        if !repeatedAmountStreams.isEmpty {
+            return repeatedAmountStreams
+        }
+
+        let distinctAmounts = Set(sortedTransactions.map(amountCents(for:)))
+        let estimate = recurringEstimate(from: sortedTransactions)
+
+        if sortedTransactions.count <= 2, classification.confidence >= 0.8 {
+            return [
+                RecurringTransactionStream(
+                    idSuffix: nil,
+                    transactions: sortedTransactions,
+                    estimate: estimate,
+                    confidenceLabel: "Needs review",
+                    displayName: MerchantNameCleaner.canonicalDisplayName(for: classification.displayName),
+                    note: classification.plainEnglish
+                )
+            ]
+        }
+
+        if recurringKind == .bill,
+           sortedTransactions.count >= 2,
+           distinctAmounts.count <= 2,
+           estimate.cadenceDays >= 21,
+           estimate.cadenceDays <= 45 {
+            return [
+                RecurringTransactionStream(
+                    idSuffix: nil,
+                    transactions: sortedTransactions,
+                    estimate: estimate,
+                    confidenceLabel: classification.confidence >= 0.75 ? "High confidence" : "Needs review",
+                    displayName: MerchantNameCleaner.canonicalDisplayName(for: classification.displayName),
+                    note: classification.plainEnglish
+                )
+            ]
+        }
+
+        return []
+    }
+
+    private func isStrongRecurringAmountStream(_ sortedTransactions: [FinanceTransaction]) -> Bool {
+        guard sortedTransactions.count >= 3 else { return false }
+        let cadence = estimatedCadenceDays(from: sortedTransactions.map(\.date))
+        guard cadence >= 21, cadence <= 45 else { return false }
+
+        let dates = sortedTransactions.map(\.date)
+        let gaps = zip(dates.dropLast(), dates.dropFirst()).compactMap { start, end in
+            Calendar.current.dateComponents(
+                [.day],
+                from: Calendar.current.startOfDay(for: start),
+                to: Calendar.current.startOfDay(for: end)
+            ).day
+        }
+
+        let monthlyLikeGaps = gaps.filter { $0 >= 21 && $0 <= 45 }.count
+        return monthlyLikeGaps >= max(2, gaps.count / 2)
+    }
+
+    private func amountCents(for transaction: FinanceTransaction) -> Int {
+        Int((abs(transaction.amount) * 100).rounded())
     }
 
     private func recurringEstimate(from sortedTransactions: [FinanceTransaction]) -> RecurringEstimate {
@@ -1243,6 +1353,15 @@ private struct RecurringEstimate {
     var lastAmount: Double
     var cadenceDays: Int
     var frequency: String
+}
+
+private struct RecurringTransactionStream {
+    var idSuffix: String?
+    var transactions: [FinanceTransaction]
+    var estimate: RecurringEstimate
+    var confidenceLabel: String
+    var displayName: String?
+    var note: String?
 }
 
 private extension JSONEncoder {

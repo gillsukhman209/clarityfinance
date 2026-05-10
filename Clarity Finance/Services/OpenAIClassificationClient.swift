@@ -84,6 +84,7 @@ struct OpenAIClassificationClient {
             "instructions": """
             You classify personal finance transaction merchants for a Gen Z spending app.
             Be practical and conservative. Do not call one-off purchases subscriptions just because the merchant is famous.
+            Look at the individual transaction dates and amounts. Merchants like Apple, Google, Amazon, Meta, TikTok, and ad platforms can contain both real subscriptions and one-time purchases. A merchant should only be subscription/bill when the actual charge pattern is recurring, not just because the company sells subscriptions.
             A subscription means an ongoing paid service or membership. A bill means a recurring necessary payment like rent, utilities, insurance, loans, phone, internet, taxes, or credit card payments. Transfers and debt payments should not be counted as spending subscriptions.
             Return short names and plain English that a normal person instantly understands.
             """,
@@ -153,6 +154,7 @@ struct AIClassificationInput {
     var totalSpent: Double
     var averageAmount: Double
     var latestDate: Date
+    var transactions: [AITransactionSample]
 
     var promptDictionary: [String: Any] {
         [
@@ -163,7 +165,29 @@ struct AIClassificationInput {
             "transaction_count": transactionCount,
             "total_spent": round(totalSpent * 100) / 100,
             "average_amount": round(averageAmount * 100) / 100,
-            "latest_date": Self.dateFormatter.string(from: latestDate)
+            "latest_date": Self.dateFormatter.string(from: latestDate),
+            "transactions": transactions.map(\.promptDictionary)
+        ]
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter
+    }()
+}
+
+struct AITransactionSample {
+    var date: Date
+    var amount: Double
+    var name: String
+
+    var promptDictionary: [String: Any] {
+        [
+            "date": Self.dateFormatter.string(from: date),
+            "amount": round(abs(amount) * 100) / 100,
+            "name": name
         ]
     }
 
