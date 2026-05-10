@@ -310,6 +310,14 @@ final class FinanceStore {
         data.merchantClassifications[Self.merchantKey(for: transaction.merchantName)]
     }
 
+    func merchantHistory(for transaction: FinanceTransaction) -> [FinanceTransaction] {
+        let merchantKey = Self.merchantKey(for: transaction.merchantName)
+        return filteredTransactions.filter {
+            $0.id != transaction.id &&
+                Self.merchantKey(for: $0.merchantName) == merchantKey
+        }
+    }
+
     func merchantSpending(inMonthOf anchor: Date) -> [MerchantSpend] {
         let calendar = Calendar.current
         let grouped = Dictionary(grouping: filteredTransactions.filter {

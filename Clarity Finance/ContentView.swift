@@ -94,7 +94,8 @@ private struct TodayTab: View {
             TransactionDetailView(
                 transaction: transaction,
                 account: store.account(for: transaction.accountID),
-                classification: store.classification(for: transaction)
+                classification: store.classification(for: transaction),
+                merchantHistory: store.merchantHistory(for: transaction)
             )
         }
         .refreshable {
@@ -262,7 +263,8 @@ private struct ActivityTab: View {
             TransactionDetailView(
                 transaction: transaction,
                 account: store.account(for: transaction.accountID),
-                classification: store.classification(for: transaction)
+                classification: store.classification(for: transaction),
+                merchantHistory: store.merchantHistory(for: transaction)
             )
         }
         .refreshable {
@@ -274,6 +276,7 @@ private struct ActivityTab: View {
 
 private struct AccountsTab: View {
     @Bindable var store: FinanceStore
+    @State private var accountPendingRemoval: FinancialAccount?
 
     var body: some View {
         let filteredAccounts = store.filteredAccounts
@@ -296,7 +299,9 @@ private struct AccountsTab: View {
                     )
                 } else {
                     ForEach(filteredAccounts) { account in
-                        AccountRow(account: account)
+                        AccountRow(account: account) {
+                            accountPendingRemoval = account
+                        }
 
                         if account.id != filteredAccounts.last?.id {
                             Divider()
@@ -306,6 +311,16 @@ private struct AccountsTab: View {
             }
             .padding(18)
             .clarityCard(radius: 20)
+        }
+        .alert(item: $accountPendingRemoval) { account in
+            Alert(
+                title: Text("Remove \(account.displayName)?"),
+                message: Text("This removes the account and every transaction, subscription, bill, budget number, and total linked to it from Clarity."),
+                primaryButton: .destructive(Text("Remove")) {
+                    store.removeAccount(account)
+                },
+                secondaryButton: .cancel()
+            )
         }
     }
 }

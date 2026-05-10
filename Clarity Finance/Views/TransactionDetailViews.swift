@@ -6,6 +6,7 @@ struct TransactionDetailView: View {
     var transaction: FinanceTransaction
     var account: FinancialAccount?
     var classification: AIMerchantClassification? = nil
+    var merchantHistory: [FinanceTransaction] = []
 
     var body: some View {
         NavigationStack {
@@ -69,6 +70,32 @@ struct TransactionDetailView: View {
                         }
                         .padding(18)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .clarityCard(radius: 20)
+                    }
+
+                    if !merchantHistory.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("More from this merchant")
+                                    .font(.headline.weight(.semibold))
+                                    .foregroundStyle(ClarityColor.primaryText)
+
+                                Text("\(merchantHistory.count) past transaction\(merchantHistory.count == 1 ? "" : "s")")
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(ClarityColor.secondaryText)
+                            }
+
+                            VStack(spacing: 0) {
+                                ForEach(Array(merchantHistory.enumerated()), id: \.element.id) { index, transaction in
+                                    MiniTransactionRow(transaction: transaction)
+
+                                    if index < merchantHistory.count - 1 {
+                                        DetailDivider()
+                                    }
+                                }
+                            }
+                        }
+                        .padding(18)
                         .clarityCard(radius: 20)
                     }
                 }

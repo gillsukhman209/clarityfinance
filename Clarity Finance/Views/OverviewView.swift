@@ -34,7 +34,9 @@ struct OverviewView: View {
         .sheet(item: $selectedTransaction) { transaction in
             TransactionDetailView(
                 transaction: transaction,
-                account: store.account(for: transaction.accountID)
+                account: store.account(for: transaction.accountID),
+                classification: store.classification(for: transaction),
+                merchantHistory: store.merchantHistory(for: transaction)
             )
         }
     }
