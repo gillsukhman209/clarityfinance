@@ -48,34 +48,27 @@ struct SubscriptionsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                ScreenTitle(title: "Subscriptions", subtitle: "Recurring charges detected from synced transactions.")
+                ScreenTitle(title: "Subscriptions", subtitle: "Detected recurring charges, split into subscriptions and bills.")
 
                 if !store.data.accounts.isEmpty {
                     AccountFilterBar(accounts: store.data.accounts, selectedAccountIDs: $store.selectedAccountIDs)
                 }
 
                 MetricCard(
-                    title: "Plaid recurring",
+                    title: "Recurring",
                     value: MoneyFormat.currency(totalMonthlyRecurring),
-                    caption: "\(visibleItems.count) stream(s) from Plaid, \(activeCount) active",
+                    caption: "\(visibleItems.count) charge(s), \(activeCount) active",
                     symbolName: "calendar.badge.clock"
                 )
 
-                Button {
-                    Task {
-                        await store.refreshRecurringCharges()
-                    }
-                } label: {
-                    Label(store.isSyncing ? "Refreshing..." : "Refresh Plaid recurring", systemImage: "arrow.clockwise")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(store.isSyncing || store.data.connections.isEmpty)
+                Text(store.data.transactions.isEmpty ? "Connect a bank in Settings." : "Pull down to refresh recurring charges.")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(ClarityColor.secondaryText)
 
                 if store.subscriptionIntelligence.isEmpty {
                     EmptyStateView(
-                        title: "No Plaid recurring streams yet",
-                        message: "Tap refresh after syncing accounts. This page now shows only what Plaid's recurring endpoint returns.",
+                        title: "No recurring charges yet",
+                        message: "Run the spending scan in Settings after syncing transactions.",
                         symbolName: "calendar"
                     )
                     .padding(18)
@@ -85,19 +78,19 @@ struct SubscriptionsView: View {
                         title: "Subscriptions",
                         total: subscriptionsTotal,
                         items: subscriptionItems,
-                        emptyMessage: "Plaid has not returned any subscription streams."
+                        emptyMessage: "No subscriptions found yet."
                     )
 
                     recurringSection(
                         title: "Recurring bills",
                         total: billsTotal,
                         items: billItems,
-                        emptyMessage: "Plaid has not returned any bill streams."
+                        emptyMessage: "No recurring bills found yet."
                     )
 
                     if !inactiveItems.isEmpty {
                         recurringSection(
-                            title: "Inactive from Plaid",
+                            title: "Inactive",
                             total: inactiveItems.reduce(0) { $0 + $1.subscription.monthlyAmount },
                             items: inactiveItems,
                             emptyMessage: ""
@@ -115,12 +108,13 @@ struct SubscriptionsView: View {
                 }
 
                 if !store.recurringDiagnostics.isEmpty {
-                    PlaidRecurringDiagnosticsCard(lines: store.recurringDiagnostics)
+                    RecurringDiagnosticsCard(lines: store.recurringDiagnostics)
                 }
             }
             .padding(24)
             .frame(maxWidth: 820, alignment: .leading)
         }
+        .clarityTabContentPadding()
         .sheet(item: $selectedSubscription) { item in
             SubscriptionDetailView(
                 subscription: item.subscription,
@@ -130,6 +124,10 @@ struct SubscriptionsView: View {
             ) { correction in
                 store.setRecurringCharge(item.subscription, correction: correction)
             }
+        }
+        .refreshable {
+            guard !store.data.transactions.isEmpty else { return }
+            await store.refreshRecurringCharges()
         }
     }
 
@@ -181,12 +179,12 @@ struct SubscriptionsView: View {
                 store.setRecurringCharge(item.subscription, correction: .bill)
             }
 
-            Button(item.isIgnored ? "Restore Plaid classification" : "Hide recurring charge") {
+            Button(item.isIgnored ? "Restore recurring charge" : "Hide recurring charge") {
                 store.setRecurringCharge(item.subscription, correction: item.isIgnored ? nil : .ignored)
             }
 
             if item.correction != nil {
-                Button("Reset to Plaid") {
+                Button("Reset") {
                     store.setRecurringCharge(item.subscription, correction: nil)
                 }
             }
@@ -201,12 +199,12 @@ struct SubscriptionsView: View {
     }
 }
 
-private struct PlaidRecurringDiagnosticsCard: View {
+private struct RecurringDiagnosticsCard: View {
     var lines: [String]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "Plaid recurring diagnostics", systemImage: "stethoscope")
+            SectionHeader(title: "Recurring diagnostics", systemImage: "stethoscope")
 
             Text(lines.joined(separator: "\n"))
                 .font(.caption.monospaced())

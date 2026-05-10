@@ -5,15 +5,16 @@ struct TransactionDetailView: View {
 
     var transaction: FinanceTransaction
     var account: FinancialAccount?
+    var classification: AIMerchantClassification? = nil
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     DetailHeader(
-                        symbolName: transaction.category.symbolName,
-                        title: transaction.merchantName,
-                        subtitle: transaction.category.title,
+                        symbolName: classification?.kind.symbolName ?? transaction.category.symbolName,
+                        title: classification?.displayName ?? transaction.merchantName,
+                        subtitle: classification?.kind.title ?? transaction.category.title,
                         amount: MoneyFormat.currency(transaction.signedDisplayAmount, showsSign: true),
                         amountColor: transaction.isIncome ? ClarityColor.green : ClarityColor.primaryText
                     )
@@ -26,6 +27,12 @@ struct TransactionDetailView: View {
                         DetailRow(title: "Institution", value: account?.institutionName ?? "Unknown")
                         DetailDivider()
                         DetailRow(title: "Category", value: transaction.category.title)
+                        if let classification {
+                            DetailDivider()
+                            DetailRow(title: "Label", value: classification.kind.title)
+                            DetailDivider()
+                            DetailRow(title: "Confidence", value: "\(Int(classification.confidence * 100))%")
+                        }
                         DetailDivider()
                         DetailRow(title: "Status", value: transaction.pending ? "Pending" : "Posted")
                         DetailDivider()
@@ -33,6 +40,21 @@ struct TransactionDetailView: View {
                     }
                     .padding(18)
                     .clarityCard(radius: 20)
+
+                    if let classification, !classification.plainEnglish.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Note")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(ClarityColor.secondaryText)
+
+                            Text(classification.plainEnglish)
+                                .font(.subheadline)
+                                .foregroundStyle(ClarityColor.primaryText)
+                        }
+                        .padding(18)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .clarityCard(radius: 20)
+                    }
 
                     if transaction.originalName != transaction.merchantName {
                         VStack(alignment: .leading, spacing: 8) {
@@ -101,11 +123,11 @@ struct SubscriptionDetailView: View {
                         DetailDivider()
                         DetailRow(title: "Category", value: subscription.category.title)
                         DetailDivider()
-                        DetailRow(title: "Plaid type", value: subscription.recurringKind.title)
+                        DetailRow(title: "Type", value: subscription.recurringKind.title)
                         DetailDivider()
-                        DetailRow(title: "Frequency", value: subscription.frequency.isEmpty ? "Plaid recurring" : subscription.frequency.replacingOccurrences(of: "_", with: " ").capitalized)
+                        DetailRow(title: "Frequency", value: subscription.frequency.isEmpty ? "Recurring" : subscription.frequency.replacingOccurrences(of: "_", with: " ").capitalized)
                         DetailDivider()
-                        DetailRow(title: "Plaid status", value: subscription.status.isEmpty ? "Active" : subscription.status.capitalized)
+                        DetailRow(title: "Status", value: subscription.status.isEmpty ? "Active" : subscription.status)
                         if subscription.lastAmount > 0 {
                             DetailDivider()
                             DetailRow(title: "Last amount", value: MoneyFormat.currency(subscription.lastAmount))
@@ -129,7 +151,7 @@ struct SubscriptionDetailView: View {
                     if !subscription.streamDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                        subscription.streamDescription != subscription.displayName {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Plaid raw name")
+                            Text("Why it was picked")
                                 .font(.caption.weight(.bold))
                                 .foregroundStyle(ClarityColor.secondaryText)
 
@@ -164,13 +186,13 @@ struct SubscriptionDetailView: View {
                             }
 
                             HStack(spacing: 10) {
-                                Button(intelligence.isIgnored ? "Restore Plaid" : "Hide") {
+                                Button(intelligence.isIgnored ? "Restore" : "Hide") {
                                     setCorrection(intelligence.isIgnored ? nil : .ignored)
                                     dismiss()
                                 }
                                 .buttonStyle(SecondaryClarityButtonStyle())
 
-                                Button("Reset to Plaid") {
+                                Button("Reset") {
                                     setCorrection(nil)
                                     dismiss()
                                 }

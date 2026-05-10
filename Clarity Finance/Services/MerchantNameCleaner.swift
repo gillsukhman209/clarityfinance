@@ -24,6 +24,40 @@ enum MerchantNameCleaner {
         return cleaned.isEmpty ? original : titleCaseIfAllCaps(cleaned)
     }
 
+    static func canonicalDisplayName(for name: String) -> String {
+        let cleaned = clean(name)
+        let key = normalizedKey(cleaned)
+
+        if key.hasPrefix("appleads") ||
+            key.hasPrefix("apple-ad") ||
+            key.contains("apple-advertising") ||
+            key.contains("apple-services") ||
+            key == "apple-subscriptions" ||
+            key == "apple-card-statement" ||
+            key == "apple" ||
+            key == "apple-com-bill" {
+            return "Apple Subscriptions"
+        }
+
+        if key.hasPrefix("claude") || key.hasPrefix("anthropic") {
+            return "Claude AI"
+        }
+
+        if key.hasPrefix("openai") || key.contains("chatgpt") {
+            return "OpenAI ChatGPT"
+        }
+
+        if key.hasPrefix("google") && key.contains("one") {
+            return "Google One"
+        }
+
+        return cleaned
+    }
+
+    static func canonicalKey(for name: String) -> String {
+        normalizedKey(canonicalDisplayName(for: name))
+    }
+
     private static func removeAddressFragments(from name: String) -> String {
         var parts = name.components(separatedBy: CharacterSet(charactersIn: "•|"))
         if parts.count > 1 {
@@ -54,6 +88,14 @@ enum MerchantNameCleaner {
 
     private static func collapseWhitespace(_ name: String) -> String {
         name.replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)
+    }
+
+    private static func normalizedKey(_ name: String) -> String {
+        name
+            .lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
     }
 
     private static func titleCaseIfAllCaps(_ name: String) -> String {

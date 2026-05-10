@@ -73,8 +73,8 @@ struct SubscriptionIntelligence: Identifiable, Hashable {
         if correction == .ignored { return "Hidden by you" }
         if correction == .subscription { return "Marked subscription by you" }
         if correction == .bill { return "Marked bill by you" }
-        if !subscription.isActive { return "Inactive from Plaid" }
-        return "Plaid \(subscription.frequency.isEmpty ? "recurring" : subscription.frequency.lowercased().replacingOccurrences(of: "_", with: " "))"
+        if !subscription.isActive { return "Inactive" }
+        return subscription.frequency.isEmpty ? "Recurring" : subscription.frequency.lowercased().replacingOccurrences(of: "_", with: " ")
     }
 }
 
@@ -384,16 +384,33 @@ enum FinanceCoachEngine {
             return subscription.id
         }
 
-        return "\(subscription.accountID ?? "unknown")|\(normalized(subscription.displayName))"
+        return "\(subscription.accountID ?? "all")|\(MerchantNameCleaner.canonicalKey(for: subscription.displayName))"
     }
 
     static func matchingTransactions(for subscription: SubscriptionItem, in transactions: [FinanceTransaction]) -> [FinanceTransaction] {
+        if let merchantKey = aiMerchantKey(for: subscription) {
+            return transactions
+                .filter { transaction in
+                    guard !transaction.isIncome else { return false }
+                    if let accountID = subscription.accountID, transaction.accountID != accountID {
+                        return false
+                    }
+                    return MerchantNameCleaner.canonicalKey(for: transaction.merchantName) == merchantKey ||
+                        MerchantNameCleaner.canonicalKey(for: transaction.originalName) == merchantKey
+                }
+                .sorted { $0.date > $1.date }
+        }
+
         let merchantKeys = [
             subscription.merchantName,
-            subscription.displayName,
-            subscription.streamDescription
+            subscription.displayName
         ]
-        .map(normalized)
+        .flatMap { value in
+            [
+                normalized(value),
+                MerchantNameCleaner.canonicalKey(for: value)
+            ]
+        }
         .filter { !$0.isEmpty && $0 != "unknown merchant" }
 
         guard !merchantKeys.isEmpty else { return [] }
@@ -408,7 +425,12 @@ enum FinanceCoachEngine {
                     transaction.merchantName,
                     transaction.originalName
                 ]
-                .map(normalized)
+                .flatMap { value in
+                    [
+                        normalized(value),
+                        MerchantNameCleaner.canonicalKey(for: value)
+                    ]
+                }
                 .filter { !$0.isEmpty }
 
                 return transactionKeys.contains { transactionKey in
@@ -418,6 +440,15 @@ enum FinanceCoachEngine {
                 }
             }
             .sorted { $0.date > $1.date }
+    }
+
+    private static func aiMerchantKey(for subscription: SubscriptionItem) -> String? {
+        guard subscription.source == .ai else { return nil }
+        let prefix = "ai-recurring-"
+        guard subscription.id.hasPrefix(prefix) else {
+            return MerchantNameCleaner.canonicalKey(for: subscription.displayName)
+        }
+        return String(subscription.id.dropFirst(prefix.count))
     }
 
     private static func expenseTransactions(_ transactions: [FinanceTransaction], inMonthOf anchor: Date) -> [FinanceTransaction] {
@@ -463,9 +494,8 @@ enum FinanceCoachEngine {
     }
 
     private static func confidenceScore(subscription: SubscriptionItem, matchingTransactions: [FinanceTransaction]) -> Double {
-        guard subscription.source == .plaid else { return 0.4 }
-        var score = 0.38
-        score += 0.42
+        guard subscription.source == .plaid || subscription.source == .ai else { return 0.4 }
+        var score = subscription.source == .ai ? 0.72 : 0.8
         if matchingTransactions.count >= 1 { score += 0.08 }
         if matchingTransactions.count >= 2 { score += 0.06 }
         if !subscription.frequency.isEmpty { score += 0.06 }

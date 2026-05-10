@@ -40,6 +40,7 @@ struct BudgetView: View {
             .padding(24)
             .frame(maxWidth: 820, alignment: .leading)
         }
+        .clarityTabContentPadding()
     }
 }
 

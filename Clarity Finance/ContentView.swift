@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 #if os(iOS)
 import UIKit
 #elseif os(macOS)
@@ -9,54 +10,322 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     @Bindable var store: FinanceStore
+    @State private var selectedTab: ClarityTab = .today
     @State private var plaidWebSession: PlaidWebSession?
+    @State private var isImportingStatement = false
+    @State private var showsDiagnostics = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                header
-                connectCard
-                accountsCard
-                statusArea
-            }
-            .padding(24)
-            .frame(maxWidth: 760, alignment: .leading)
+        TabView(selection: $selectedTab) {
+            TodayTab(store: store)
+                .tabItem { Label("Today", systemImage: "house.fill") }
+                .tag(ClarityTab.today)
+
+            ActivityTab(store: store)
+                .tabItem { Label("Activity", systemImage: "list.bullet.rectangle.portrait.fill") }
+                .tag(ClarityTab.activity)
+
+            SubscriptionsView(store: store)
+                .tabItem { Label("Subs", systemImage: "calendar.badge.clock") }
+                .tag(ClarityTab.subscriptions)
+
+            AccountsTab(store: store)
+                .tabItem { Label("Accounts", systemImage: "wallet.pass.fill") }
+                .tag(ClarityTab.accounts)
+
+            SettingsTab(
+                store: store,
+                plaidWebSession: $plaidWebSession,
+                isImportingStatement: $isImportingStatement,
+                showsDiagnostics: $showsDiagnostics
+            )
+            .tabItem { Label("Settings", systemImage: "gearshape.fill") }
+            .tag(ClarityTab.settings)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clarityBackground()
         .sheet(item: $plaidWebSession) { session in
             PlaidLinkSheet(store: store, session: session)
+        }
+        .fileImporter(
+            isPresented: $isImportingStatement,
+            allowedContentTypes: [.pdf],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                store.importAppleCardStatement(from: url)
+            case .failure(let error):
+                store.lastErrorMessage = error.localizedDescription
+            }
         }
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase == .active else { return }
             Task { await store.importCompletedHostedLinkWhenAppReturns() }
         }
     }
+}
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Clarity")
-                .font(.system(size: 38, weight: .bold))
-                .foregroundStyle(ClarityColor.primaryText)
+private enum ClarityTab {
+    case today
+    case activity
+    case subscriptions
+    case accounts
+    case settings
+}
 
-            Text("Connect your accounts first. Everything else is being rebuilt from a clean base.")
-                .font(.subheadline)
-                .foregroundStyle(ClarityColor.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
+private struct TodayTab: View {
+    @Bindable var store: FinanceStore
+    @State private var selectedTransaction: FinanceTransaction?
+
+    var body: some View {
+        ScreenScroll {
+            HeaderView(title: "Clarity", subtitle: store.accountFilterCaption) {
+                if !store.data.accounts.isEmpty {
+                    AccountFilterBar(accounts: store.data.accounts, selectedAccountIDs: $store.selectedAccountIDs)
+                }
+            }
+
+            spendingCard
+            quickReadCard
+            latestPreviewCard
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .sheet(item: $selectedTransaction) { transaction in
+            TransactionDetailView(
+                transaction: transaction,
+                account: store.account(for: transaction.accountID),
+                classification: store.classification(for: transaction)
+            )
+        }
+        .refreshable {
+            guard !store.data.connections.isEmpty else { return }
+            await store.syncAllConnections()
+        }
     }
 
-    private var connectCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            SectionHeader(title: "Bank connection", systemImage: "building.columns.fill")
+    private var spendingCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Total spent")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(ClarityColor.secondaryText)
 
-            Text("Plaid opens inside Clarity now. Finish your bank login, then tap Done - Import Accounts.")
-                .font(.subheadline)
+                Text(MoneyFormat.currency(store.spendingThisMonth))
+                    .font(.system(size: 42, weight: .bold))
+                    .foregroundStyle(ClarityColor.primaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+
+                Text("This month")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(ClarityColor.mutedText)
+            }
+
+            HStack(spacing: 10) {
+                SpendingStatCard(title: "Today", amount: store.spendingToday)
+                SpendingStatCard(title: "7 days", amount: store.spendingThisWeek)
+                SpendingStatCard(title: "Month", amount: store.spendingThisMonth)
+            }
+
+            Text(store.data.connections.isEmpty ? "Connect a bank in Settings." : "Pull down to refresh.")
+                .font(.caption.weight(.semibold))
                 .foregroundStyle(ClarityColor.secondaryText)
+        }
+        .padding(18)
+        .clarityCard(radius: 20)
+    }
+
+    private var quickReadCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(title: "Quick read", systemImage: "sparkles")
+
+            VStack(spacing: 10) {
+                if let topMerchant = store.topMerchantThisMonth {
+                    InsightRow(
+                        symbolName: "crown.fill",
+                        title: "Top merchant",
+                        value: "\(topMerchant.merchantName) - \(MoneyFormat.currency(topMerchant.total))",
+                        note: topMerchant.classification?.plainEnglish
+                    )
+                } else {
+                    InsightRow(
+                        symbolName: "tray.fill",
+                        title: "No spending yet",
+                        value: "Connect accounts from Settings.",
+                        note: nil
+                    )
+                }
+
+                if let biggest = store.biggestSpendThisMonth {
+                    InsightRow(
+                        symbolName: "bolt.fill",
+                        title: "Biggest swipe",
+                        value: "\(biggest.merchantName) - \(MoneyFormat.currency(abs(biggest.amount)))",
+                        note: store.classification(for: biggest)?.kind.title
+                    )
+                }
+
+                InsightRow(
+                    symbolName: "brain.head.profile",
+                    title: "AI scan",
+                    value: store.aiSummaryText,
+                    note: nil
+                )
+            }
+        }
+        .padding(18)
+        .clarityCard(radius: 20)
+    }
+
+    private var latestPreviewCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(title: "Latest", systemImage: "clock.fill")
+
+            if store.recentTransactions.isEmpty {
+                EmptyStateView(
+                    title: "No transactions",
+                    message: "Connect a bank in Settings, then refresh.",
+                    symbolName: "receipt"
+                )
+            } else {
+                ForEach(Array(store.recentTransactions.prefix(5))) { transaction in
+                    Button {
+                        selectedTransaction = transaction
+                    } label: {
+                        SimpleTransactionRow(
+                            transaction: transaction,
+                            classification: store.classification(for: transaction),
+                            account: store.account(for: transaction.accountID)
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    if transaction.id != Array(store.recentTransactions.prefix(5)).last?.id {
+                        Divider()
+                    }
+                }
+            }
+        }
+        .padding(18)
+        .clarityCard(radius: 20)
+    }
+}
+
+private struct ActivityTab: View {
+    @Bindable var store: FinanceStore
+    @State private var selectedTransaction: FinanceTransaction?
+
+    var body: some View {
+        ScreenScroll {
+            HeaderView(title: "Activity", subtitle: store.accountFilterCaption) {
+                if !store.data.accounts.isEmpty {
+                    AccountFilterBar(accounts: store.data.accounts, selectedAccountIDs: $store.selectedAccountIDs)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader(title: "Transactions", systemImage: "list.bullet.rectangle.portrait.fill")
+
+                if store.recentTransactions.isEmpty {
+                    EmptyStateView(
+                        title: "No transactions",
+                        message: "Connect a bank in Settings, then refresh.",
+                        symbolName: "receipt"
+                    )
+                } else {
+                    ForEach(Array(store.recentTransactions.prefix(60))) { transaction in
+                        Button {
+                            selectedTransaction = transaction
+                        } label: {
+                            SimpleTransactionRow(
+                                transaction: transaction,
+                                classification: store.classification(for: transaction),
+                                account: store.account(for: transaction.accountID)
+                            )
+                        }
+                        .buttonStyle(.plain)
+
+                        if transaction.id != Array(store.recentTransactions.prefix(60)).last?.id {
+                            Divider()
+                        }
+                    }
+                }
+            }
+            .padding(18)
+            .clarityCard(radius: 20)
+        }
+        .sheet(item: $selectedTransaction) { transaction in
+            TransactionDetailView(
+                transaction: transaction,
+                account: store.account(for: transaction.accountID),
+                classification: store.classification(for: transaction)
+            )
+        }
+        .refreshable {
+            guard !store.data.connections.isEmpty else { return }
+            await store.syncAllConnections()
+        }
+    }
+}
+
+private struct AccountsTab: View {
+    @Bindable var store: FinanceStore
+
+    var body: some View {
+        ScreenScroll {
+            HeaderView(title: "Accounts", subtitle: store.accountFilterCaption) {
+                if !store.data.accounts.isEmpty {
+                    AccountFilterBar(accounts: store.data.accounts, selectedAccountIDs: $store.selectedAccountIDs)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader(title: "Balances", systemImage: "wallet.pass.fill")
+
+                if store.data.accounts.isEmpty {
+                    EmptyStateView(
+                        title: "No accounts",
+                        message: "Go to Settings to connect a bank or import Apple Card.",
+                        symbolName: "wallet.pass"
+                    )
+                } else {
+                    ForEach(store.filteredAccounts) { account in
+                        AccountRow(account: account)
+
+                        if account.id != store.filteredAccounts.last?.id {
+                            Divider()
+                        }
+                    }
+                }
+            }
+            .padding(18)
+            .clarityCard(radius: 20)
+        }
+    }
+}
+
+private struct SettingsTab: View {
+    @Bindable var store: FinanceStore
+    @Binding var plaidWebSession: PlaidWebSession?
+    @Binding var isImportingStatement: Bool
+    @Binding var showsDiagnostics: Bool
+
+    var body: some View {
+        ScreenScroll {
+            HeaderView(title: "Settings", subtitle: "Connect, import, refresh.")
+
+            addAccountCard
+            toolsCard
+            statusArea
+        }
+    }
+
+    private var addAccountCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(title: "Add account", systemImage: "link.badge.plus")
 
             Button {
-                store.recordDiagnostic("Connect Real Bank button tapped on clean connection screen.")
+                store.recordDiagnostic("Connect Real Bank button tapped in Settings.")
                 Task {
                     await store.connectRealBank()
                     if let hostedLinkURL = store.hostedLinkSession?.hostedLinkURL {
@@ -67,87 +336,75 @@ struct ContentView: View {
                     }
                 }
             } label: {
-                Label("Connect real bank", systemImage: "link.badge.plus")
+                Label("Connect real bank", systemImage: "building.columns.fill")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(PrimaryClarityButtonStyle())
             .disabled(store.isSyncing)
 
             if let hostedLinkSession = store.hostedLinkSession {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Plaid link ready")
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(ClarityColor.primaryText)
-
-                    Button {
-                        store.recordDiagnostic("Reopening pending Plaid Hosted Link in app web sheet.")
-                        plaidWebSession = PlaidWebSession(url: hostedLinkSession.hostedLinkURL)
-                    } label: {
-                        Label("Open Plaid in app", systemImage: "rectangle.portrait.and.arrow.right")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(SecondaryClarityButtonStyle())
-
-                    Button {
-                        Task { await store.finishRealBankConnection() }
-                    } label: {
-                        Label("Done - Import Accounts", systemImage: "square.and.arrow.down.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(PrimaryClarityButtonStyle())
-                    .disabled(store.isSyncing)
+                Button {
+                    plaidWebSession = PlaidWebSession(url: hostedLinkSession.hostedLinkURL)
+                } label: {
+                    Label("Open pending Plaid link", systemImage: "rectangle.portrait.and.arrow.right")
+                        .frame(maxWidth: .infinity)
                 }
-                .padding(14)
-                .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(ClarityColor.panelElevated))
+                .buttonStyle(SecondaryClarityButtonStyle())
+
+                Button {
+                    Task { await store.finishRealBankConnection() }
+                } label: {
+                    Label("Done - Import Accounts", systemImage: "square.and.arrow.down.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(PrimaryClarityButtonStyle())
+                .disabled(store.isSyncing)
             }
 
-            Divider()
+            HStack(spacing: 10) {
+                Button {
+                    Task { await store.connectSandboxInstitution() }
+                } label: {
+                    Label("Sandbox", systemImage: "testtube.2")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryClarityButtonStyle())
+                .disabled(store.isSyncing)
 
-            Button {
-                Task { await store.connectSandboxInstitution() }
-            } label: {
-                Label("Connect Plaid sandbox", systemImage: "testtube.2")
-                    .frame(maxWidth: .infinity)
+                Button {
+                    isImportingStatement = true
+                } label: {
+                    Label("Apple Card PDF", systemImage: "doc.badge.plus")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryClarityButtonStyle())
             }
-            .buttonStyle(SecondaryClarityButtonStyle())
-            .disabled(store.isSyncing)
         }
         .padding(18)
         .clarityCard(radius: 20)
     }
 
-    private var accountsCard: some View {
+    private var toolsCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                SectionHeader(title: "Connected accounts", systemImage: "wallet.pass.fill")
+            SectionHeader(title: "Tools", systemImage: "slider.horizontal.3")
 
-                Button {
-                    Task { await store.syncAllConnections() }
-                } label: {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                        .font(.system(size: 16, weight: .semibold))
-                        .frame(width: 36, height: 36)
-                }
-                .buttonStyle(.plain)
-                .disabled(store.isSyncing || store.data.connections.isEmpty)
-                .accessibilityLabel("Refresh accounts")
+            Button {
+                Task { await store.syncAllConnections() }
+            } label: {
+                Label("Refresh accounts and transactions", systemImage: "arrow.triangle.2.circlepath")
+                    .frame(maxWidth: .infinity)
             }
+            .buttonStyle(SecondaryClarityButtonStyle())
+            .disabled(store.isSyncing || store.data.connections.isEmpty)
 
-            if store.data.accounts.isEmpty {
-                EmptyStateView(
-                    title: "No accounts yet",
-                    message: "Connect a real bank to verify the Plaid flow before we rebuild spending features.",
-                    symbolName: "wallet.pass"
-                )
-            } else {
-                ForEach(store.data.accounts) { account in
-                    AccountRow(account: account)
-
-                    if account.id != store.data.accounts.last?.id {
-                        Divider()
-                    }
-                }
+            Button {
+                Task { await store.analyzeSpendingWithAI() }
+            } label: {
+                Label(store.isAnalyzingSpending ? "Scanning spending" : "Run AI spending scan", systemImage: "sparkles")
+                    .frame(maxWidth: .infinity)
             }
+            .buttonStyle(SecondaryClarityButtonStyle())
+            .disabled(store.isAnalyzingSpending || store.data.transactions.isEmpty)
 
             Button(role: .destructive) {
                 store.clearLocalData()
@@ -171,14 +428,21 @@ struct ContentView: View {
             StatusBanner(message: lastErrorMessage, isError: true)
         }
 
-        PlaidDiagnosticsCard(
-            logText: store.diagnosticsText,
-            copy: {
-                copyDiagnostics(store.diagnosticsText)
-                store.recordDiagnostic("Diagnostics copied to clipboard.")
-            },
-            clear: store.clearDiagnostics
-        )
+        DisclosureGroup("Diagnostics", isExpanded: $showsDiagnostics) {
+            PlaidDiagnosticsCard(
+                logText: store.diagnosticsText,
+                copy: {
+                    copyDiagnostics(store.diagnosticsText)
+                    store.recordDiagnostic("Diagnostics copied to clipboard.")
+                },
+                clear: store.clearDiagnostics
+            )
+            .padding(.top, 8)
+        }
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(ClarityColor.primaryText)
+        .padding(16)
+        .clarityCard(radius: 18)
     }
 
     private func copyDiagnostics(_ text: String) {
@@ -188,6 +452,150 @@ struct ContentView: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
         #endif
+    }
+}
+
+private struct ScreenScroll<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                content
+            }
+            .padding(22)
+            .frame(maxWidth: 780, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clarityTabContentPadding()
+        .clarityBackground()
+    }
+}
+
+private struct HeaderView<Trailing: View>: View {
+    var title: String
+    var subtitle: String
+    @ViewBuilder var trailing: Trailing
+
+    init(title: String, subtitle: String, @ViewBuilder trailing: () -> Trailing = { EmptyView() }) {
+        self.title = title
+        self.subtitle = subtitle
+        self.trailing = trailing()
+    }
+
+    var body: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 36, weight: .bold))
+                    .foregroundStyle(ClarityColor.primaryText)
+
+                Text(subtitle)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(ClarityColor.secondaryText)
+            }
+
+            Spacer()
+            trailing
+        }
+    }
+}
+
+private struct SpendingStatCard: View {
+    var title: String
+    var amount: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ClarityColor.secondaryText)
+
+            Text(MoneyFormat.compact(amount))
+                .font(.headline.weight(.bold))
+                .foregroundStyle(ClarityColor.primaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .padding(13)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(ClarityColor.panelElevated))
+    }
+}
+
+private struct InsightRow: View {
+    var symbolName: String
+    var title: String
+    var value: String
+    var note: String?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            IconBadge(symbolName: symbolName)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(ClarityColor.secondaryText)
+
+                Text(value)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(ClarityColor.primaryText)
+                    .lineLimit(2)
+
+                if let note, !note.isEmpty {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(ClarityColor.mutedText)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct SimpleTransactionRow: View {
+    var transaction: FinanceTransaction
+    var classification: AIMerchantClassification?
+    var account: FinancialAccount?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            IconBadge(symbolName: classification?.kind.symbolName ?? transaction.category.symbolName)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(classification?.displayName ?? transaction.merchantName)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(ClarityColor.primaryText)
+                    .lineLimit(1)
+
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(ClarityColor.secondaryText)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            Text(MoneyFormat.currency(transaction.signedDisplayAmount, showsSign: true))
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(transaction.isIncome ? ClarityColor.green : ClarityColor.primaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+        }
+        .padding(.vertical, 10)
+    }
+
+    private var subtitle: String {
+        let date = transaction.date.formatted(.dateTime.month(.abbreviated).day().year())
+        let label = classification?.kind.title ?? transaction.category.title
+        if let account {
+            return "\(label) - \(account.name) - \(date)"
+        }
+        return "\(label) - \(date)"
     }
 }
 

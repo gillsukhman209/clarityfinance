@@ -162,6 +162,66 @@ struct FinanceTransaction: Identifiable, Codable, Hashable {
     }
 }
 
+enum AITransactionKind: String, Codable, Hashable, CaseIterable {
+    case subscription
+    case bill
+    case oneTimePurchase
+    case income
+    case transfer
+    case debtPayment
+    case fee
+    case refund
+    case unknown
+
+    var title: String {
+        switch self {
+        case .subscription: "Subscription"
+        case .bill: "Bill"
+        case .oneTimePurchase: "One-time"
+        case .income: "Income"
+        case .transfer: "Transfer"
+        case .debtPayment: "Debt payment"
+        case .fee: "Fee"
+        case .refund: "Refund"
+        case .unknown: "Unknown"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .subscription: "play.rectangle.fill"
+        case .bill: "doc.text.fill"
+        case .oneTimePurchase: "bag.fill"
+        case .income: "arrow.down.circle.fill"
+        case .transfer: "arrow.left.arrow.right"
+        case .debtPayment: "creditcard.fill"
+        case .fee: "exclamationmark.circle.fill"
+        case .refund: "arrow.uturn.backward.circle.fill"
+        case .unknown: "questionmark.circle.fill"
+        }
+    }
+}
+
+struct AIMerchantClassification: Codable, Hashable {
+    var merchantKey: String
+    var displayName: String
+    var kind: AITransactionKind
+    var category: TransactionCategory
+    var confidence: Double
+    var plainEnglish: String
+    var updatedAt: Date
+}
+
+struct MerchantSpend: Identifiable, Hashable {
+    var merchantKey: String
+    var merchantName: String
+    var total: Double
+    var transactionCount: Int
+    var classification: AIMerchantClassification?
+
+    var id: String { merchantKey }
+}
+
 enum RecurringChargeKind: String, Codable, Hashable {
     case subscription
     case bill
@@ -190,6 +250,7 @@ enum RecurringChargeKind: String, Codable, Hashable {
 
 enum RecurringChargeSource: String, Codable, Hashable {
     case plaid
+    case ai
     case localLegacy
 }
 
@@ -382,6 +443,7 @@ struct PlaidConnection: Identifiable, Codable, Hashable {
 struct FinanceDataSet: Codable {
     var accounts: [FinancialAccount]
     var transactions: [FinanceTransaction]
+    var merchantClassifications: [String: AIMerchantClassification]
     var subscriptions: [SubscriptionItem]
     var budgets: [BudgetCategory]
     var netWorthSnapshots: [NetWorthSnapshot]
@@ -392,6 +454,7 @@ struct FinanceDataSet: Codable {
     static let empty = FinanceDataSet(
         accounts: [],
         transactions: [],
+        merchantClassifications: [:],
         subscriptions: [],
         budgets: [],
         netWorthSnapshots: [],
@@ -403,6 +466,7 @@ struct FinanceDataSet: Codable {
     enum CodingKeys: String, CodingKey {
         case accounts
         case transactions
+        case merchantClassifications
         case subscriptions
         case budgets
         case netWorthSnapshots
@@ -414,6 +478,7 @@ struct FinanceDataSet: Codable {
     init(
         accounts: [FinancialAccount],
         transactions: [FinanceTransaction],
+        merchantClassifications: [String: AIMerchantClassification] = [:],
         subscriptions: [SubscriptionItem],
         budgets: [BudgetCategory],
         netWorthSnapshots: [NetWorthSnapshot],
@@ -423,6 +488,7 @@ struct FinanceDataSet: Codable {
     ) {
         self.accounts = accounts
         self.transactions = transactions
+        self.merchantClassifications = merchantClassifications
         self.subscriptions = subscriptions
         self.budgets = budgets
         self.netWorthSnapshots = netWorthSnapshots
@@ -435,6 +501,7 @@ struct FinanceDataSet: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         accounts = try container.decodeIfPresent([FinancialAccount].self, forKey: .accounts) ?? []
         transactions = try container.decodeIfPresent([FinanceTransaction].self, forKey: .transactions) ?? []
+        merchantClassifications = try container.decodeIfPresent([String: AIMerchantClassification].self, forKey: .merchantClassifications) ?? [:]
         subscriptions = try container.decodeIfPresent([SubscriptionItem].self, forKey: .subscriptions) ?? []
         budgets = try container.decodeIfPresent([BudgetCategory].self, forKey: .budgets) ?? []
         netWorthSnapshots = try container.decodeIfPresent([NetWorthSnapshot].self, forKey: .netWorthSnapshots) ?? []

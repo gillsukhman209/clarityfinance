@@ -47,6 +47,10 @@ extension View {
     func clarityCard(radius: CGFloat = 18) -> some View {
         modifier(ClarityCard(radius: radius))
     }
+
+    func clarityTabContentPadding() -> some View {
+        safeAreaPadding(.bottom, 96)
+    }
 }
 
 struct IconBadge: View {

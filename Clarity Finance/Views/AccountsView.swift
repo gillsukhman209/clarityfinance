@@ -15,6 +15,7 @@ struct AccountsView: View {
                 .padding(24)
                 .frame(maxWidth: 900, alignment: .leading)
         }
+        .clarityTabContentPadding()
     }
 }
 

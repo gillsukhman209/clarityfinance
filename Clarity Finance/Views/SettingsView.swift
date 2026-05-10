@@ -11,6 +11,7 @@ struct SettingsView: View {
     @State private var sandboxSecret = ""
     @State private var productionSecret = ""
     @State private var linkCustomizationName = ""
+    @State private var openAIAPIKey = ""
 
     var body: some View {
         ScrollView {
@@ -68,12 +69,24 @@ struct SettingsView: View {
                             .foregroundStyle(ClarityColor.secondaryText)
                     }
 
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("OpenAI API key")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(ClarityColor.secondaryText)
+
+                        SecureField("OpenAI API key", text: $openAIAPIKey)
+                            .textFieldStyle(.plain)
+                            .padding(13)
+                            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(ClarityColor.panelElevated))
+                    }
+
                     Button {
                         store.saveCredentials(
                             clientID: clientID,
                             sandboxSecret: sandboxSecret,
                             productionSecret: productionSecret,
-                            linkCustomizationName: linkCustomizationName
+                            linkCustomizationName: linkCustomizationName,
+                            openAIAPIKey: openAIAPIKey
                         )
                     } label: {
                         Label("Save credentials", systemImage: "key.fill")
@@ -142,11 +155,13 @@ struct SettingsView: View {
             .padding(24)
             .frame(maxWidth: 900, alignment: .leading)
         }
+        .clarityTabContentPadding()
         .onAppear {
             clientID = store.credentials.clientID
             sandboxSecret = store.credentials.sandboxSecret
             productionSecret = store.credentials.productionSecret
             linkCustomizationName = store.credentials.linkCustomizationName
+            openAIAPIKey = store.openAIAPIKey
         }
     }
 

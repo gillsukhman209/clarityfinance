@@ -30,6 +30,7 @@ struct CoachView: View {
             .padding(24)
             .frame(maxWidth: 940, alignment: .leading)
         }
+        .clarityTabContentPadding()
     }
 
     private var insightsSection: some View {
