@@ -18,6 +18,8 @@ struct TransactionsView: View {
     }
 
     var body: some View {
+        let visibleTransactions = filteredTransactions
+
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 ScreenTitle(title: "Transactions", subtitle: "A single feed across every bank, card, and statement.")
@@ -47,26 +49,28 @@ struct TransactionsView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
-                    SectionHeader(title: "\(filteredTransactions.count) transactions")
+                    SectionHeader(title: "\(visibleTransactions.count) transactions")
 
-                    if filteredTransactions.isEmpty {
+                    if visibleTransactions.isEmpty {
                         EmptyStateView(
                             title: store.data.transactions.isEmpty ? "No transactions yet" : "No matches",
                             message: store.data.transactions.isEmpty ? "Connect Plaid Sandbox or import an Apple Card PDF to build your transaction feed." : "Try another merchant or category.",
                             symbolName: store.data.transactions.isEmpty ? "list.bullet.rectangle.portrait" : "magnifyingglass"
                         )
                     } else {
-                        ForEach(filteredTransactions) { transaction in
-                            Button {
-                                selectedTransaction = transaction
-                            } label: {
-                                TransactionRow(
-                                    transaction: transaction,
-                                    account: store.account(for: transaction.accountID)
-                                )
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(visibleTransactions) { transaction in
+                                Button {
+                                    selectedTransaction = transaction
+                                } label: {
+                                    TransactionRow(
+                                        transaction: transaction,
+                                        account: store.account(for: transaction.accountID)
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
-                            .contentShape(Rectangle())
                         }
                     }
                 }

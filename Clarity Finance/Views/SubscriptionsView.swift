@@ -4,48 +4,9 @@ struct SubscriptionsView: View {
     @Bindable var store: FinanceStore
     @State private var selectedSubscription: SubscriptionIntelligence?
 
-    private var visibleItems: [SubscriptionIntelligence] {
-        store.subscriptionIntelligence.filter { !$0.isIgnored }
-    }
-
-    private var activeItems: [SubscriptionIntelligence] {
-        visibleItems.filter { $0.subscription.isActive }
-    }
-
-    private var inactiveItems: [SubscriptionIntelligence] {
-        visibleItems.filter { !$0.subscription.isActive }
-    }
-
-    private var subscriptionItems: [SubscriptionIntelligence] {
-        activeItems.filter { $0.subscription.recurringKind == .subscription }
-    }
-
-    private var billItems: [SubscriptionIntelligence] {
-        activeItems.filter { $0.subscription.recurringKind == .bill }
-    }
-
-    private var ignoredItems: [SubscriptionIntelligence] {
-        store.subscriptionIntelligence.filter(\.isIgnored)
-    }
-
-    private var activeCount: Int {
-        activeItems.count
-    }
-
-    private var subscriptionsTotal: Double {
-        subscriptionItems.reduce(0) { $0 + $1.subscription.monthlyAmount }
-    }
-
-    private var billsTotal: Double {
-        billItems.reduce(0) { $0 + $1.subscription.monthlyAmount }
-    }
-
-    var totalMonthlyRecurring: Double {
-        activeItems
-            .reduce(0) { $0 + $1.subscription.monthlyAmount }
-    }
-
     var body: some View {
+        let model = SubscriptionScreenModel(items: store.subscriptionIntelligence)
+
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 ScreenTitle(title: "Subscriptions", subtitle: "Detected recurring charges, split into subscriptions and bills.")
@@ -56,8 +17,8 @@ struct SubscriptionsView: View {
 
                 MetricCard(
                     title: "Recurring",
-                    value: MoneyFormat.currency(totalMonthlyRecurring),
-                    caption: "\(visibleItems.count) charge(s), \(activeCount) active",
+                    value: MoneyFormat.currency(model.totalMonthlyRecurring),
+                    caption: "\(model.visibleItems.count) charge(s), \(model.activeItems.count) active",
                     symbolName: "calendar.badge.clock"
                 )
 
@@ -65,7 +26,7 @@ struct SubscriptionsView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(ClarityColor.secondaryText)
 
-                if store.subscriptionIntelligence.isEmpty {
+                if model.allItems.isEmpty {
                     EmptyStateView(
                         title: "No recurring charges yet",
                         message: "Run the spending scan in Settings after syncing transactions.",
@@ -76,32 +37,32 @@ struct SubscriptionsView: View {
                 } else {
                     recurringSection(
                         title: "Subscriptions",
-                        total: subscriptionsTotal,
-                        items: subscriptionItems,
+                        total: model.subscriptionsTotal,
+                        items: model.subscriptionItems,
                         emptyMessage: "No subscriptions found yet."
                     )
 
                     recurringSection(
                         title: "Recurring bills",
-                        total: billsTotal,
-                        items: billItems,
+                        total: model.billsTotal,
+                        items: model.billItems,
                         emptyMessage: "No recurring bills found yet."
                     )
 
-                    if !inactiveItems.isEmpty {
+                    if !model.inactiveItems.isEmpty {
                         recurringSection(
                             title: "Inactive",
-                            total: inactiveItems.reduce(0) { $0 + $1.subscription.monthlyAmount },
-                            items: inactiveItems,
+                            total: model.inactiveTotal,
+                            items: model.inactiveItems,
                             emptyMessage: ""
                         )
                     }
 
-                    if !ignoredItems.isEmpty {
+                    if !model.ignoredItems.isEmpty {
                         recurringSection(
                             title: "Hidden",
-                            total: ignoredItems.reduce(0) { $0 + $1.subscription.monthlyAmount },
-                            items: ignoredItems,
+                            total: model.ignoredTotal,
+                            items: model.ignoredItems,
                             emptyMessage: ""
                         )
                     }
@@ -196,6 +157,36 @@ struct SubscriptionsView: View {
                 .background(Circle().fill(ClarityColor.panelElevated))
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct SubscriptionScreenModel {
+    var allItems: [SubscriptionIntelligence]
+    var visibleItems: [SubscriptionIntelligence]
+    var activeItems: [SubscriptionIntelligence]
+    var inactiveItems: [SubscriptionIntelligence]
+    var subscriptionItems: [SubscriptionIntelligence]
+    var billItems: [SubscriptionIntelligence]
+    var ignoredItems: [SubscriptionIntelligence]
+    var subscriptionsTotal: Double
+    var billsTotal: Double
+    var inactiveTotal: Double
+    var ignoredTotal: Double
+    var totalMonthlyRecurring: Double
+
+    init(items: [SubscriptionIntelligence]) {
+        allItems = items
+        visibleItems = items.filter { !$0.isIgnored }
+        activeItems = visibleItems.filter { $0.subscription.isActive }
+        inactiveItems = visibleItems.filter { !$0.subscription.isActive }
+        subscriptionItems = activeItems.filter { $0.subscription.recurringKind == .subscription }
+        billItems = activeItems.filter { $0.subscription.recurringKind == .bill }
+        ignoredItems = items.filter(\.isIgnored)
+        subscriptionsTotal = subscriptionItems.reduce(0) { $0 + $1.subscription.monthlyAmount }
+        billsTotal = billItems.reduce(0) { $0 + $1.subscription.monthlyAmount }
+        inactiveTotal = inactiveItems.reduce(0) { $0 + $1.subscription.monthlyAmount }
+        ignoredTotal = ignoredItems.reduce(0) { $0 + $1.subscription.monthlyAmount }
+        totalMonthlyRecurring = activeItems.reduce(0) { $0 + $1.subscription.monthlyAmount }
     }
 }
 

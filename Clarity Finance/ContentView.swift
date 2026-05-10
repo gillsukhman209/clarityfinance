@@ -178,17 +178,19 @@ private struct TodayTab: View {
     }
 
     private var latestPreviewCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let recentTransactions = Array(store.recentTransactions.prefix(5))
+
+        return VStack(alignment: .leading, spacing: 12) {
             SectionHeader(title: "Latest", systemImage: "clock.fill")
 
-            if store.recentTransactions.isEmpty {
+            if recentTransactions.isEmpty {
                 EmptyStateView(
                     title: "No transactions",
                     message: "Connect a bank in Settings, then refresh.",
                     symbolName: "receipt"
                 )
             } else {
-                ForEach(Array(store.recentTransactions.prefix(5))) { transaction in
+                ForEach(recentTransactions) { transaction in
                     Button {
                         selectedTransaction = transaction
                     } label: {
@@ -200,7 +202,7 @@ private struct TodayTab: View {
                     }
                     .buttonStyle(.plain)
 
-                    if transaction.id != Array(store.recentTransactions.prefix(5)).last?.id {
+                    if transaction.id != recentTransactions.last?.id {
                         Divider()
                     }
                 }
@@ -216,6 +218,8 @@ private struct ActivityTab: View {
     @State private var selectedTransaction: FinanceTransaction?
 
     var body: some View {
+        let recentTransactions = Array(store.recentTransactions.prefix(60))
+
         ScreenScroll {
             HeaderView(title: "Activity", subtitle: store.accountFilterCaption) {
                 if !store.data.accounts.isEmpty {
@@ -226,14 +230,14 @@ private struct ActivityTab: View {
             VStack(alignment: .leading, spacing: 12) {
                 SectionHeader(title: "Transactions", systemImage: "list.bullet.rectangle.portrait.fill")
 
-                if store.recentTransactions.isEmpty {
+                if recentTransactions.isEmpty {
                     EmptyStateView(
                         title: "No transactions",
                         message: "Connect a bank in Settings, then refresh.",
                         symbolName: "receipt"
                     )
                 } else {
-                    ForEach(Array(store.recentTransactions.prefix(60))) { transaction in
+                    ForEach(recentTransactions) { transaction in
                         Button {
                             selectedTransaction = transaction
                         } label: {
@@ -245,7 +249,7 @@ private struct ActivityTab: View {
                         }
                         .buttonStyle(.plain)
 
-                        if transaction.id != Array(store.recentTransactions.prefix(60)).last?.id {
+                        if transaction.id != recentTransactions.last?.id {
                             Divider()
                         }
                     }
@@ -272,6 +276,8 @@ private struct AccountsTab: View {
     @Bindable var store: FinanceStore
 
     var body: some View {
+        let filteredAccounts = store.filteredAccounts
+
         ScreenScroll {
             HeaderView(title: "Accounts", subtitle: store.accountFilterCaption) {
                 if !store.data.accounts.isEmpty {
@@ -289,10 +295,10 @@ private struct AccountsTab: View {
                         symbolName: "wallet.pass"
                     )
                 } else {
-                    ForEach(store.filteredAccounts) { account in
+                    ForEach(filteredAccounts) { account in
                         AccountRow(account: account)
 
-                        if account.id != store.filteredAccounts.last?.id {
+                        if account.id != filteredAccounts.last?.id {
                             Divider()
                         }
                     }

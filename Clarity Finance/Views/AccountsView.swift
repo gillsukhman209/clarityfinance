@@ -25,6 +25,7 @@ struct AccountsContent: View {
     var showsStatusAndDiagnostics = true
     @State private var isImportingStatement = false
     @State private var plaidWebSession: PlaidWebSession?
+    @State private var accountPendingRemoval: FinancialAccount?
     @State private var institutionID = PlaidSandboxInstitution.firstPlatypus.id
     @State private var institutionName = PlaidSandboxInstitution.firstPlatypus.name
     @State private var profile: PlaidSandboxProfile = .transactionsDynamic
@@ -55,7 +56,9 @@ struct AccountsContent: View {
                         )
                     } else {
                         ForEach(store.filteredAccounts) { account in
-                            AccountRow(account: account)
+                            AccountRow(account: account) {
+                                accountPendingRemoval = account
+                            }
                         }
                     }
                 }
@@ -220,6 +223,16 @@ struct AccountsContent: View {
         }
         .sheet(item: $plaidWebSession) { session in
             PlaidLinkSheet(store: store, session: session)
+        }
+        .alert(item: $accountPendingRemoval) { account in
+            Alert(
+                title: Text("Remove \(account.displayName)?"),
+                message: Text("This removes the account and every transaction, subscription, bill, budget number, and total linked to it from Clarity."),
+                primaryButton: .destructive(Text("Remove")) {
+                    store.removeAccount(account)
+                },
+                secondaryButton: .cancel()
+            )
         }
     }
 

@@ -9,7 +9,12 @@ import SwiftUI
 
 @main
 struct Clarity_FinanceApp: App {
-    @State private var store = FinanceStore()
+    @State private var store: FinanceStore
+
+    @MainActor
+    init() {
+        _store = State(initialValue: FinanceStore())
+    }
 
     var body: some Scene {
         WindowGroup {

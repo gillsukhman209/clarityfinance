@@ -239,6 +239,7 @@ struct TransactionRow: View {
 
 struct AccountRow: View {
     var account: FinancialAccount
+    var removeAction: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 12) {
@@ -267,6 +268,17 @@ struct AccountRow: View {
                 Text(account.isManual ? "PDF" : "Plaid")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(ClarityColor.mutedText)
+            }
+
+            if let removeAction {
+                Button(role: .destructive, action: removeAction) {
+                    Image(systemName: "trash")
+                        .font(.subheadline.weight(.bold))
+                        .frame(width: 38, height: 38)
+                        .background(Circle().fill(ClarityColor.panelElevated))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Remove \(account.displayName)")
             }
         }
         .padding(.vertical, 12)

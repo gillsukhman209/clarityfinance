@@ -450,6 +450,7 @@ struct FinanceDataSet: Codable {
     var connections: [PlaidConnection]
     var ignoredSubscriptionKeys: Set<String>
     var recurringChargeCorrections: [String: RecurringChargeCorrection]
+    var removedAccountIDs: Set<String>
 
     static let empty = FinanceDataSet(
         accounts: [],
@@ -460,7 +461,8 @@ struct FinanceDataSet: Codable {
         netWorthSnapshots: [],
         connections: [],
         ignoredSubscriptionKeys: [],
-        recurringChargeCorrections: [:]
+        recurringChargeCorrections: [:],
+        removedAccountIDs: []
     )
 
     enum CodingKeys: String, CodingKey {
@@ -473,6 +475,7 @@ struct FinanceDataSet: Codable {
         case connections
         case ignoredSubscriptionKeys
         case recurringChargeCorrections
+        case removedAccountIDs
     }
 
     init(
@@ -484,7 +487,8 @@ struct FinanceDataSet: Codable {
         netWorthSnapshots: [NetWorthSnapshot],
         connections: [PlaidConnection],
         ignoredSubscriptionKeys: Set<String> = [],
-        recurringChargeCorrections: [String: RecurringChargeCorrection] = [:]
+        recurringChargeCorrections: [String: RecurringChargeCorrection] = [:],
+        removedAccountIDs: Set<String> = []
     ) {
         self.accounts = accounts
         self.transactions = transactions
@@ -495,6 +499,7 @@ struct FinanceDataSet: Codable {
         self.connections = connections
         self.ignoredSubscriptionKeys = ignoredSubscriptionKeys
         self.recurringChargeCorrections = recurringChargeCorrections
+        self.removedAccountIDs = removedAccountIDs
     }
 
     init(from decoder: Decoder) throws {
@@ -508,6 +513,7 @@ struct FinanceDataSet: Codable {
         connections = try container.decodeIfPresent([PlaidConnection].self, forKey: .connections) ?? []
         ignoredSubscriptionKeys = try container.decodeIfPresent(Set<String>.self, forKey: .ignoredSubscriptionKeys) ?? []
         recurringChargeCorrections = try container.decodeIfPresent([String: RecurringChargeCorrection].self, forKey: .recurringChargeCorrections) ?? [:]
+        removedAccountIDs = try container.decodeIfPresent(Set<String>.self, forKey: .removedAccountIDs) ?? []
     }
 }
 

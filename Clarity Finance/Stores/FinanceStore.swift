@@ -44,7 +44,11 @@ final class FinanceStore {
 
         removeLegacySampleDataIfNeeded()
         normalizeStoredTransactionMerchantNames()
+        sortTransactionsNewestFirst()
         clearDerivedDataForFreshCore()
+        if hasFinancialData {
+            rebuildDerivedData()
+        }
         save()
         recordDiagnostic("FinanceStore initialized. Diagnostics build active.")
     }
@@ -68,7 +72,7 @@ final class FinanceStore {
     }
 
     var recentTransactions: [FinanceTransaction] {
-        filteredTransactions.sorted { $0.date > $1.date }
+        filteredTransactions
     }
 
     var spendingToday: Double {
@@ -276,6 +280,10 @@ final class FinanceStore {
 
     func account(for accountID: String) -> FinancialAccount? {
         data.accounts.first { $0.id == accountID }
+    }
+
+    func removeAccount(_ account: FinancialAccount) {
+        removeAccount(id: account.id, displayName: account.displayName)
     }
 
     func expenseTotal(inMonthOf anchor: Date) -> Double {
@@ -750,6 +758,10 @@ final class FinanceStore {
 
     private func upsert(accounts: [FinancialAccount]) {
         for account in accounts {
+            guard !data.removedAccountIDs.contains(account.id) else {
+                continue
+            }
+
             if let index = data.accounts.firstIndex(where: { $0.id == account.id }) {
                 data.accounts[index] = account
             } else {
@@ -762,8 +774,14 @@ final class FinanceStore {
     }
 
     private func upsert(transactions: [FinanceTransaction]) {
+        var didChangeTransactions = false
+
         for transaction in transactions {
             var transaction = transaction
+            guard !data.removedAccountIDs.contains(transaction.accountID) else {
+                continue
+            }
+
             transaction.merchantName = MerchantNameCleaner.clean(transaction.merchantName)
 
             if let index = data.transactions.firstIndex(where: { $0.id == transaction.id }) {
@@ -771,7 +789,32 @@ final class FinanceStore {
             } else {
                 data.transactions.append(transaction)
             }
+            didChangeTransactions = true
         }
+
+        if didChangeTransactions {
+            sortTransactionsNewestFirst()
+        }
+    }
+
+    private func removeAccount(id accountID: String, displayName: String) {
+        let accountsBefore = data.accounts.count
+        let transactionsBefore = data.transactions.count
+
+        data.removedAccountIDs.insert(accountID)
+        data.accounts.removeAll { $0.id == accountID }
+        data.transactions.removeAll { $0.accountID == accountID }
+        data.netWorthSnapshots = []
+        selectedAccountIDs.remove(accountID)
+
+        rebuildDerivedData()
+        save()
+
+        let removedAccounts = accountsBefore - data.accounts.count
+        let removedTransactions = transactionsBefore - data.transactions.count
+        statusMessage = "Removed \(displayName) and \(removedTransactions) linked transaction(s)."
+        lastErrorMessage = nil
+        recordDiagnostic("Removed account id=\(accountID), accountsRemoved=\(removedAccounts), transactionsRemoved=\(removedTransactions).")
     }
 
     private func aiClassificationInputs(onlyMissing: Bool) -> [AIClassificationInput] {
@@ -852,6 +895,15 @@ final class FinanceStore {
 
         if changedCount > 0 {
             recordDiagnostic("Cleaned \(changedCount) stored transaction merchant name(s).")
+        }
+    }
+
+    private func sortTransactionsNewestFirst() {
+        data.transactions.sort { lhs, rhs in
+            if lhs.date != rhs.date {
+                return lhs.date > rhs.date
+            }
+            return lhs.id < rhs.id
         }
     }
 
@@ -974,23 +1026,15 @@ final class FinanceStore {
         return grouped.flatMap { _, transactions -> [SubscriptionItem] in
             guard let latest = transactions.max(by: { $0.date < $1.date }) else { return [] }
             let merchantKey = Self.merchantKey(for: latest.merchantName)
-            guard let classification = data.merchantClassifications[merchantKey] else { return [] }
-
-            let recurringKind: RecurringChargeKind
-            switch classification.kind {
-            case .subscription:
-                recurringKind = .subscription
-            case .bill:
-                recurringKind = .bill
-            default:
-                return []
-            }
+            let classification = data.merchantClassifications[merchantKey]
+            let classifiedRecurringKind = recurringKind(from: classification?.kind)
 
             let sorted = transactions.sorted { $0.date < $1.date }
             let streams = recurringStreams(
                 from: sorted,
                 classification: classification,
-                recurringKind: recurringKind
+                fallbackDisplayName: MerchantNameCleaner.canonicalDisplayName(for: latest.merchantName),
+                classifiedRecurringKind: classifiedRecurringKind
             )
 
             return streams.map { stream in
@@ -999,23 +1043,23 @@ final class FinanceStore {
                 let nextDate = Calendar.current.date(byAdding: .day, value: stream.estimate.cadenceDays, to: lastDate) ?? .daysFromNow(stream.estimate.cadenceDays)
                 let activeCutoff = Calendar.current.date(byAdding: .day, value: -max(stream.estimate.cadenceDays * 2, 45), to: Date()) ?? .daysAgo(75)
                 let accountIDs = Set(stream.transactions.map(\.accountID))
-                let displayName = stream.displayName ?? MerchantNameCleaner.canonicalDisplayName(for: classification.displayName)
+                let displayName = stream.displayName ?? MerchantNameCleaner.canonicalDisplayName(for: latest.merchantName)
 
                 return SubscriptionItem(
                     id: stream.idSuffix.map { "ai-recurring-\(merchantKey)--\($0)" } ?? "ai-recurring-\(merchantKey)",
                     merchantName: displayName,
-                    category: classification.category,
+                    category: stream.category,
                     monthlyAmount: stream.estimate.monthlyAmount,
                     nextExpectedDate: nextDate,
                     accountID: accountIDs.count == 1 ? streamLatest.accountID : nil,
-                    recurringKind: recurringKind,
+                    recurringKind: stream.recurringKind,
                     source: .ai,
                     frequency: stream.estimate.frequency,
                     status: stream.confidenceLabel,
                     lastAmount: stream.estimate.lastAmount,
                     averageAmount: stream.estimate.averageAmount,
                     lastDate: lastDate,
-                    streamDescription: stream.note ?? classification.plainEnglish,
+                    streamDescription: stream.note ?? classification?.plainEnglish ?? "Repeated charge pattern found in transaction history.",
                     isActive: lastDate >= activeCutoff
                 )
             }
@@ -1030,10 +1074,16 @@ final class FinanceStore {
 
     private func recurringStreams(
         from sortedTransactions: [FinanceTransaction],
-        classification: AIMerchantClassification,
-        recurringKind: RecurringChargeKind
+        classification: AIMerchantClassification?,
+        fallbackDisplayName: String,
+        classifiedRecurringKind: RecurringChargeKind?
     ) -> [RecurringTransactionStream] {
         guard !sortedTransactions.isEmpty else { return [] }
+
+        let recurringKind = classifiedRecurringKind ?? .subscription
+        let category = classification?.category ?? (recurringKind == .subscription ? .subscriptions : .utilities)
+        let displayName = classification
+            .map { MerchantNameCleaner.canonicalDisplayName(for: $0.displayName) } ?? fallbackDisplayName
 
         let amountGroups = Dictionary(grouping: sortedTransactions) { amountCents(for: $0) }
         let repeatedAmountStreams = amountGroups
@@ -1049,8 +1099,10 @@ final class FinanceStore {
                     transactions: sorted,
                     estimate: estimate,
                     confidenceLabel: "High confidence",
-                    displayName: MerchantNameCleaner.canonicalDisplayName(for: classification.displayName),
-                    note: "Only the repeated \(MoneyFormat.currency(estimate.lastAmount)) charge is counted as recurring. Other \(classification.displayName) purchases stay in transaction history."
+                    displayName: displayName,
+                    recurringKind: recurringKind,
+                    category: category,
+                    note: "Only the repeated \(MoneyFormat.currency(estimate.lastAmount)) charge is counted as recurring. Other \(displayName) purchases stay in transaction history."
                 )
             }
             .sorted { lhs, rhs in
@@ -1064,40 +1116,203 @@ final class FinanceStore {
             return repeatedAmountStreams
         }
 
+        let inferredKnownStreams = knownSubscriptionStreams(
+            from: sortedTransactions,
+            fallbackDisplayName: fallbackDisplayName
+        )
+        if !inferredKnownStreams.isEmpty {
+            return inferredKnownStreams
+        }
+
+        guard let classification, let classifiedRecurringKind else {
+            return []
+        }
+
         let distinctAmounts = Set(sortedTransactions.map(amountCents(for:)))
         let estimate = recurringEstimate(from: sortedTransactions)
 
-        if sortedTransactions.count <= 2, classification.confidence >= 0.8 {
+        if sortedTransactions.count <= 2,
+           classifiedRecurringKind == .subscription,
+           classification.confidence >= 0.8,
+           !looksLikeOneTimePayment(sortedTransactions, classification: classification) {
             return [
                 RecurringTransactionStream(
                     idSuffix: nil,
                     transactions: sortedTransactions,
                     estimate: estimate,
                     confidenceLabel: "Needs review",
-                    displayName: MerchantNameCleaner.canonicalDisplayName(for: classification.displayName),
+                    displayName: displayName,
+                    recurringKind: classifiedRecurringKind,
+                    category: classification.category,
                     note: classification.plainEnglish
                 )
             ]
         }
 
-        if recurringKind == .bill,
+        if classifiedRecurringKind == .bill,
            sortedTransactions.count >= 2,
            distinctAmounts.count <= 2,
            estimate.cadenceDays >= 21,
-           estimate.cadenceDays <= 45 {
+           estimate.cadenceDays <= 45,
+           !looksLikeOneTimePayment(sortedTransactions, classification: classification) {
             return [
                 RecurringTransactionStream(
                     idSuffix: nil,
                     transactions: sortedTransactions,
                     estimate: estimate,
                     confidenceLabel: classification.confidence >= 0.75 ? "High confidence" : "Needs review",
-                    displayName: MerchantNameCleaner.canonicalDisplayName(for: classification.displayName),
+                    displayName: displayName,
+                    recurringKind: classifiedRecurringKind,
+                    category: classification.category,
                     note: classification.plainEnglish
                 )
             ]
         }
 
         return []
+    }
+
+    private func looksLikeOneTimePayment(
+        _ transactions: [FinanceTransaction],
+        classification: AIMerchantClassification
+    ) -> Bool {
+        let text = (
+            [
+                classification.displayName,
+                classification.plainEnglish,
+                classification.category.title
+            ] +
+            transactions.flatMap { transaction in
+                [
+                    transaction.merchantName,
+                    transaction.originalName,
+                    transaction.category.title
+                ]
+            }
+        )
+        .joined(separator: " ")
+        .lowercased()
+
+        let oneTimeSignals = [
+            "irs",
+            "internal revenue",
+            "treasury",
+            "franchise tax",
+            "tax payment",
+            "estimated tax",
+            "state tax",
+            "income tax",
+            "property tax",
+            "tax board",
+            "department of revenue",
+            "comptroller",
+            "one-time",
+            "one time",
+            "single payment",
+            "filing fee",
+            "permit fee"
+        ]
+
+        return oneTimeSignals.contains { text.contains($0) }
+    }
+
+    private func knownSubscriptionStreams(
+        from sortedTransactions: [FinanceTransaction],
+        fallbackDisplayName: String
+    ) -> [RecurringTransactionStream] {
+        let candidates = sortedTransactions.filter(isKnownSubscriptionCharge)
+        guard !candidates.isEmpty else { return [] }
+
+        return Dictionary(grouping: candidates) { amountCents(for: $0) }
+            .compactMap { amountCents, transactions -> RecurringTransactionStream? in
+                guard let latest = transactions.max(by: { $0.date < $1.date }) else { return nil }
+                let sorted = transactions.sorted { $0.date < $1.date }
+                let displayName = knownSubscriptionDisplayName(for: latest, fallback: fallbackDisplayName)
+                var estimate = recurringEstimate(from: sorted)
+                estimate.monthlyAmount = roundedMoney(abs(latest.amount))
+                estimate.averageAmount = estimate.monthlyAmount
+                estimate.lastAmount = estimate.monthlyAmount
+                estimate.cadenceDays = max(estimate.cadenceDays, 30)
+                estimate.frequency = "Monthly"
+
+                return RecurringTransactionStream(
+                    idSuffix: "known-\(amountCents)",
+                    transactions: sorted,
+                    estimate: estimate,
+                    confidenceLabel: sorted.count >= 2 ? "High confidence" : "Needs review",
+                    displayName: displayName,
+                    recurringKind: .subscription,
+                    category: .subscriptions,
+                    note: sorted.count >= 2
+                        ? "\(displayName) has a repeated subscription-looking charge."
+                        : "\(displayName) looks like a subscription charge, but only one matching charge is imported so far."
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.transactions.count != rhs.transactions.count {
+                    return lhs.transactions.count > rhs.transactions.count
+                }
+                return lhs.estimate.monthlyAmount > rhs.estimate.monthlyAmount
+            }
+    }
+
+    private func isKnownSubscriptionCharge(_ transaction: FinanceTransaction) -> Bool {
+        let merchantKey = Self.merchantKey(for: transaction.merchantName)
+        let rawText = "\(transaction.merchantName) \(transaction.originalName)".lowercased()
+        let amountCents = amountCents(for: transaction)
+
+        if merchantKey.contains("netflix") ||
+            merchantKey.contains("spotify") ||
+            merchantKey.contains("sling") ||
+            merchantKey.contains("google-one") ||
+            merchantKey.contains("openai") ||
+            merchantKey.contains("chatgpt") ||
+            merchantKey.contains("claude") ||
+            merchantKey.contains("anthropic") {
+            return true
+        }
+
+        guard merchantKey.contains("apple") else { return false }
+        if rawText.contains("ad") || rawText.contains("advertising") || rawText.contains("search ads") {
+            return false
+        }
+
+        return Self.commonAppleSubscriptionAmounts.contains(amountCents)
+    }
+
+    private func knownSubscriptionDisplayName(for transaction: FinanceTransaction, fallback: String) -> String {
+        let merchantKey = Self.merchantKey(for: transaction.merchantName)
+        let rawText = "\(transaction.merchantName) \(transaction.originalName)".lowercased()
+
+        if merchantKey.contains("apple") {
+            return "Apple Subscriptions"
+        }
+        if merchantKey.contains("google-one") {
+            return "Google One"
+        }
+        if merchantKey.contains("openai") || rawText.contains("chatgpt") {
+            return "OpenAI ChatGPT"
+        }
+        if merchantKey.contains("claude") || merchantKey.contains("anthropic") {
+            return "Claude AI"
+        }
+
+        return fallback
+    }
+
+    private static let commonAppleSubscriptionAmounts: Set<Int> = [
+        99, 199, 299, 399, 499, 599, 699, 799, 899, 999, 1299, 1499, 1699, 1999, 2499, 2999
+    ]
+
+    private func recurringKind(from transactionKind: AITransactionKind?) -> RecurringChargeKind? {
+        switch transactionKind {
+        case .subscription:
+            return .subscription
+        case .bill:
+            return .bill
+        default:
+            return nil
+        }
     }
 
     private func isStrongRecurringAmountStream(_ sortedTransactions: [FinanceTransaction]) -> Bool {
@@ -1375,6 +1590,8 @@ private struct RecurringTransactionStream {
     var estimate: RecurringEstimate
     var confidenceLabel: String
     var displayName: String?
+    var recurringKind: RecurringChargeKind
+    var category: TransactionCategory
     var note: String?
 }
 

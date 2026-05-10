@@ -2,13 +2,8 @@ import Foundation
 
 enum MoneyFormat {
     static func currency(_ amount: Double, code: String = "USD", showsSign: Bool = false) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.currencyCode = code
-        formatter.maximumFractionDigits = 2
-        formatter.minimumFractionDigits = 2
-        formatter.positivePrefix = showsSign && amount > 0 ? "+\(formatter.positivePrefix ?? "")" : formatter.positivePrefix
-        return formatter.string(from: NSNumber(value: amount)) ?? "$0.00"
+        let formatted = amount.formatted(.currency(code: code).precision(.fractionLength(2)))
+        return showsSign && amount > 0 ? "+\(formatted)" : formatted
     }
 
     static func compact(_ amount: Double, code: String = "USD") -> String {
@@ -27,11 +22,11 @@ enum MoneyFormat {
             value = amount
         }
 
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.currencyCode = code
-        formatter.maximumFractionDigits = suffix.isEmpty ? 0 : 1
-        return "\(formatter.string(from: NSNumber(value: value)) ?? "$0")\(suffix)"
+        let formatted = value.formatted(
+            .currency(code: code)
+                .precision(.fractionLength(suffix.isEmpty ? 0 : 1))
+        )
+        return "\(formatted)\(suffix)"
     }
 }
 

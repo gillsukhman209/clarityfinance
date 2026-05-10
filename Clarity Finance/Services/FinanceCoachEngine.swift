@@ -503,14 +503,18 @@ enum FinanceCoachEngine {
             return AIRecurringKey(merchantKey: MerchantNameCleaner.canonicalKey(for: subscription.displayName), amountCents: nil)
         }
         let rawKey = String(subscription.id.dropFirst(prefix.count))
-        let marker = "--amount-"
-        guard let markerRange = rawKey.range(of: marker) else {
-            return AIRecurringKey(merchantKey: rawKey, amountCents: nil)
+        let amountMarkers = ["--amount-", "--known-"]
+        for marker in amountMarkers {
+            guard let markerRange = rawKey.range(of: marker) else {
+                continue
+            }
+
+            let merchantKey = String(rawKey[..<markerRange.lowerBound])
+            let amountText = String(rawKey[markerRange.upperBound...])
+            return AIRecurringKey(merchantKey: merchantKey, amountCents: Int(amountText))
         }
 
-        let merchantKey = String(rawKey[..<markerRange.lowerBound])
-        let amountText = String(rawKey[markerRange.upperBound...])
-        return AIRecurringKey(merchantKey: merchantKey, amountCents: Int(amountText))
+        return AIRecurringKey(merchantKey: rawKey, amountCents: nil)
     }
 
     private static func amountCents(for transaction: FinanceTransaction) -> Int {
