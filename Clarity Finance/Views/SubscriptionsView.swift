@@ -119,7 +119,7 @@ struct SubscriptionsView: View {
             SubscriptionDetailView(
                 subscription: item.subscription,
                 account: item.account,
-                recentTransactions: FinanceCoachEngine.matchingTransactions(for: item.subscription, in: store.filteredTransactions),
+                recentTransactions: FinanceCoachEngine.relatedTransactions(for: item.subscription, in: store.filteredTransactions),
                 intelligence: item
             ) { correction in
                 store.setRecurringCharge(item.subscription, correction: correction)

@@ -442,6 +442,46 @@ enum FinanceCoachEngine {
             .sorted { $0.date > $1.date }
     }
 
+    static func relatedTransactions(for subscription: SubscriptionItem, in transactions: [FinanceTransaction]) -> [FinanceTransaction] {
+        let companyNames = [
+            subscription.displayName,
+            subscription.merchantName
+        ]
+        let companyKeys = Set(companyNames.map { MerchantNameCleaner.canonicalKey(for: $0) }.filter { !$0.isEmpty })
+        let displayNames = Set(companyNames.map { MerchantNameCleaner.canonicalDisplayName(for: $0) }.filter { !$0.isEmpty })
+        let aiKey = aiMerchantKey(for: subscription)
+
+        return transactions
+            .filter { transaction in
+                guard !transaction.isIncome else { return false }
+                if let accountID = subscription.accountID, transaction.accountID != accountID {
+                    return false
+                }
+
+                let transactionNames = [
+                    transaction.merchantName,
+                    transaction.originalName
+                ]
+                let transactionKeys = Set(transactionNames.map { MerchantNameCleaner.canonicalKey(for: $0) }.filter { !$0.isEmpty })
+                let transactionDisplayNames = Set(transactionNames.map { MerchantNameCleaner.canonicalDisplayName(for: $0) }.filter { !$0.isEmpty })
+
+                if !displayNames.isDisjoint(with: transactionDisplayNames) {
+                    return true
+                }
+
+                if !companyKeys.isDisjoint(with: transactionKeys) {
+                    return true
+                }
+
+                if let aiKey, transactionKeys.contains(aiKey) {
+                    return true
+                }
+
+                return false
+            }
+            .sorted { $0.date > $1.date }
+    }
+
     private static func aiMerchantKey(for subscription: SubscriptionItem) -> String? {
         guard subscription.source == .ai else { return nil }
         let prefix = "ai-recurring-"
