@@ -35,7 +35,12 @@ final class FinanceStore {
             productionSecret: (try? KeychainStore.read(account: "plaid-production-secret")) ?? PlaidCredentials.bundledSandbox.productionSecret,
             linkCustomizationName: (try? KeychainStore.read(account: "plaid-link-customization-name")) ?? PlaidCredentials.bundledSandbox.linkCustomizationName
         )
-        openAIAPIKey = (try? KeychainStore.read(account: "openai-api-key")) ?? ""
+        let savedOpenAIAPIKey = (try? KeychainStore.read(account: "openai-api-key")) ?? ""
+        let bundledOpenAIAPIKey = Self.bundledOpenAIAPIKey()
+        openAIAPIKey = savedOpenAIAPIKey.isEmpty ? bundledOpenAIAPIKey ?? "" : savedOpenAIAPIKey
+        if savedOpenAIAPIKey.isEmpty, let bundledOpenAIAPIKey {
+            try? KeychainStore.save(bundledOpenAIAPIKey, account: "openai-api-key")
+        }
 
         removeLegacySampleDataIfNeeded()
         normalizeStoredTransactionMerchantNames()
@@ -1326,6 +1331,15 @@ final class FinanceStore {
     private static func makeStoreURL() -> URL {
         let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
         return baseURL.appending(path: "Clarity Finance", directoryHint: .isDirectory).appending(path: "finance-data.json")
+    }
+
+    private static func bundledOpenAIAPIKey() -> String? {
+        #if HAS_LOCAL_SECRETS
+        let trimmed = LocalSecrets.openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+        #else
+        return nil
+        #endif
     }
 
     private func removeLegacySampleDataIfNeeded() {

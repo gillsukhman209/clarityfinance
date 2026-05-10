@@ -8,6 +8,7 @@
 
 /* Begin PBXFileReference section */
 		1A0D58642FAEF3B1003243C2 /* Clarity Finance.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Clarity Finance.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		1A0D58802FB10000003243C2 /* App.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = App.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -33,6 +34,7 @@
 			isa = PBXGroup;
 			children = (
 				1A0D58662FAEF3B1003243C2 /* Clarity Finance */,
+				1A0D58812FB10000003243C2 /* Config */,
 				1A0D58652FAEF3B1003243C2 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -43,6 +45,14 @@
 				1A0D58642FAEF3B1003243C2 /* Clarity Finance.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		1A0D58812FB10000003243C2 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				1A0D58802FB10000003243C2 /* App.xcconfig */,
+			);
+			path = Config;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -243,6 +253,7 @@
 		};
 		1A0D58722FAEF3B2003243C2 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 1A0D58802FB10000003243C2 /* App.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -288,6 +299,7 @@
 		};
 		1A0D58732FAEF3B2003243C2 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 1A0D58802FB10000003243C2 /* App.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
