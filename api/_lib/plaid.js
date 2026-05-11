@@ -39,7 +39,8 @@ async function postPlaid(environment, path, body) {
 }
 
 async function updateItemWebhook({ accessToken, environment, webhookURL }) {
-  if (!webhookURL) {
+  const normalizedWebhookURL = String(webhookURL || "").trim();
+  if (!normalizedWebhookURL) {
     return { skipped: true, reason: "PLAID_WEBHOOK_URL is missing" };
   }
 
@@ -48,7 +49,7 @@ async function updateItemWebhook({ accessToken, environment, webhookURL }) {
     client_id: credentials.clientID,
     secret: credentials.secret,
     access_token: accessToken,
-    webhook: webhookURL
+    webhook: normalizedWebhookURL
   });
 }
 
