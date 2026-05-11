@@ -3,13 +3,26 @@ const postgres = require("postgres");
 let client;
 let schemaReady;
 
-function sql() {
-  if (!process.env.DATABASE_URL) {
-    throw new Error("DATABASE_URL is required");
+function databaseURL() {
+  const candidates = [
+    process.env.POSTGRES_URL,
+    process.env.POSTGRES_URL_NON_POOLING,
+    process.env.POSTGRES_PRISMA_URL,
+    process.env.SUPABASE_DB_URL,
+    process.env.DATABASE_URL
+  ];
+
+  const validURL = candidates.find((value) => /^postgres(ql)?:\/\//.test(value || ""));
+  if (!validURL) {
+    throw new Error("A Postgres connection URL is required. Set DATABASE_URL or POSTGRES_URL to a postgres:// URL.");
   }
 
+  return validURL;
+}
+
+function sql() {
   if (!client) {
-    client = postgres(process.env.DATABASE_URL, {
+    client = postgres(databaseURL(), {
       max: 3,
       idle_timeout: 20,
       connect_timeout: 10
