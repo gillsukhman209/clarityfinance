@@ -91,6 +91,7 @@ module.exports = async function handler(req, res) {
     }
 
     const item = rows[0];
+    const isInitialSync = !item.cursor;
     const accessToken = decrypt(item.access_token_encrypted);
     const sync = await syncTransactions({
       accessToken,
@@ -110,6 +111,20 @@ module.exports = async function handler(req, res) {
       set cursor = ${sync.nextCursor}, updated_at = now()
       where item_id = ${itemID}
     `;
+
+    if (isInitialSync) {
+      return sendJson(res, 200, {
+        ok: true,
+        initial_sync: true,
+        added: added.length,
+        modified: modified.length,
+        removed: sync.removed.length,
+        delivery: {
+          sent: false,
+          reason: "initial_sync_baseline"
+        }
+      });
+    }
 
     const delivery = await generateAndSendForDevice({
       db,

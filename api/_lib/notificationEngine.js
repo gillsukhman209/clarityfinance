@@ -13,6 +13,7 @@ function merchantKey(name) {
 function cleanMerchantName(name) {
   const cleaned = String(name || "Unknown")
     .replace(/\s+/g, " ")
+    .replace(/\b(des|indn|co id|ach trans id|mobile pmt id):.*$/i, "")
     .replace(/\b\d{4,}\b/g, "")
     .trim();
   return cleaned || "Unknown";
@@ -68,11 +69,22 @@ function isExpense(transaction) {
     return false;
   }
 
-  if (/(payment thank you|credit card payment|autopay payment|online payment|transfer)/.test(name)) {
+  if (/(payment thank you|credit card payment|autopay payment|online payment|transfer|mobile pmt|ach trans|des:ach|co id:|indn:|interest charged)/.test(name)) {
     return false;
   }
 
   return true;
+}
+
+function isFreshForNotification(transaction, now) {
+  const date = parseTransactionDate(transaction.date);
+  if (Number.isNaN(date.getTime())) {
+    return false;
+  }
+
+  const todayEnd = addDays(startOfDay(now), 1);
+  const recentStart = addDays(startOfDay(now), -2);
+  return date >= recentStart && date < todayEnd;
 }
 
 function roastForMerchant(name, tone) {
@@ -160,7 +172,9 @@ function generateNotificationCandidates({
     privacy: settings.privacy || "merchant_amount"
   };
   const expenses = transactions.filter(isExpense);
-  const newExpenses = newTransactions.filter(isExpense);
+  const newExpenses = newTransactions
+    .filter(isExpense)
+    .filter((transaction) => isFreshForNotification(transaction, now));
   const candidates = [];
 
   for (const transaction of newExpenses) {

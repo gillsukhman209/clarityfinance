@@ -71,3 +71,31 @@ test("small single transactions are ignored unless part of a merchant trend", ()
 
   assert.equal(candidates.some((candidate) => candidate.type === "single_transaction"), false);
 });
+
+test("old backfill transactions do not create single transaction alerts", () => {
+  const transaction = tx({ transactionId: "old-openai", merchantName: "OpenAI", amount: 20, date: "2026-04-28" });
+  const candidates = generateNotificationCandidates({
+    transactions: [transaction],
+    newTransactions: [transaction],
+    now
+  });
+
+  assert.equal(candidates.some((candidate) => candidate.type === "single_transaction"), false);
+});
+
+test("bank payment descriptors are ignored", () => {
+  const transaction = tx({
+    transactionId: "bank-payment",
+    merchantName: "CAPITAL ONE DES:MOBILE PMT ID:CA006A476182E22 INDN:Ranjit Singh CO ID:XXXXX44380 WEB",
+    originalName: "CAPITAL ONE DES:MOBILE PMT ID:CA006A476182E22 INDN:Ranjit Singh CO ID:XXXXX44380 WEB",
+    amount: 14.96,
+    date: "2026-05-10"
+  });
+  const candidates = generateNotificationCandidates({
+    transactions: [transaction],
+    newTransactions: [transaction],
+    now
+  });
+
+  assert.equal(candidates.length, 0);
+});
