@@ -71,6 +71,9 @@ final class FinanceStore {
         recordDiagnostic("FinanceStore initialized. Diagnostics build active.")
         observeAPNSTokenUpdates()
         Task { await refreshNotificationPermissionStatus() }
+        if authSession != nil {
+            Task { await verifyCurrentAuthSessionWithBackend() }
+        }
     }
 
     var isSignedIn: Bool {
@@ -312,6 +315,8 @@ final class FinanceStore {
 
     func removeAccount(_ account: FinancialAccount) {
         removeAccount(id: account.id, displayName: account.displayName)
+        guard !account.isManual else { return }
+        Task { await removeBackendAccount(accountID: account.id, displayName: account.displayName) }
     }
 
     func expenseTotal(inMonthOf anchor: Date) -> Double {
@@ -443,11 +448,16 @@ final class FinanceStore {
             let user = try await service.verifyWithBackend(authSession)
             authStatusMessage = "Backend verified \(user.email?.isEmpty == false ? user.email! : user.id)."
             recordDiagnostic("Backend auth verification succeeded. userID=\(user.id), emailPresent=\(user.email != nil).")
+            await restoreCloudDataIfPossible(trigger: "backend auth verification")
         } catch {
             authErrorMessage = error.localizedDescription
             authStatusMessage = nil
             recordDiagnostic("Backend auth verification failed: \(error.localizedDescription)")
         }
+    }
+
+    func restoreCloudData() async {
+        await restoreCloudDataIfPossible(trigger: "manual settings restore")
     }
 
     func signOut() {
@@ -1392,6 +1402,77 @@ final class FinanceStore {
         }
 
         return try await plaidClient.fetchAccounts(credentials: credentials, connection: connection, environment: environment)
+    }
+
+    private func restoreCloudDataIfPossible(trigger: String) async {
+        guard let authSession else {
+            recordDiagnostic("Cloud restore skipped from \(trigger): missing Supabase session.")
+            return
+        }
+
+        guard !isSyncing else {
+            recordDiagnostic("Cloud restore skipped from \(trigger): sync already running.")
+            return
+        }
+
+        isSyncing = true
+        statusMessage = "Restoring your linked bank data..."
+        lastErrorMessage = nil
+        recordDiagnostic("Cloud restore started from \(trigger).")
+        defer { isSyncing = false }
+
+        do {
+            let snapshot = try await plaidClient.restoreBackendSnapshot(authSession: authSession)
+            data.removedAccountIDs.formUnion(snapshot.removedAccountIDs)
+            data.connections = mergeConnections(local: data.connections, cloud: snapshot.connections)
+            upsert(accounts: snapshot.accounts)
+            upsert(transactions: snapshot.transactions)
+            data.accounts.removeAll { data.removedAccountIDs.contains($0.id) }
+            data.transactions.removeAll { data.removedAccountIDs.contains($0.accountID) }
+            rebuildDerivedData()
+            save()
+            statusMessage = "Restored \(snapshot.accounts.count) account(s) and \(snapshot.transactions.count) transaction(s)."
+            recordDiagnostic("Cloud restore completed. connections=\(snapshot.connections.count), accounts=\(snapshot.accounts.count), transactions=\(snapshot.transactions.count), removedAccounts=\(snapshot.removedAccountIDs.count).")
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            recordDiagnostic("Cloud restore failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func mergeConnections(local: [PlaidConnection], cloud: [PlaidConnection]) -> [PlaidConnection] {
+        var merged = local
+        for cloudConnection in cloud {
+            if let index = merged.firstIndex(where: { $0.itemID == cloudConnection.itemID }) {
+                var existing = merged[index]
+                existing.institutionID = cloudConnection.institutionID
+                existing.institutionName = cloudConnection.institutionName
+                existing.environment = cloudConnection.environment
+                existing.cursor = cloudConnection.cursor
+                existing.lastSyncedAt = cloudConnection.lastSyncedAt
+                if existing.accessToken.isEmpty || cloudConnection.accessToken.isEmpty {
+                    existing.accessToken = ""
+                }
+                merged[index] = existing
+            } else {
+                merged.append(cloudConnection)
+            }
+        }
+        return merged
+    }
+
+    private func removeBackendAccount(accountID: String, displayName: String) async {
+        guard let authSession else {
+            recordDiagnostic("Backend account removal skipped for \(accountID): missing Supabase session.")
+            return
+        }
+
+        do {
+            try await plaidClient.removeBackendAccount(authSession: authSession, accountID: accountID)
+            recordDiagnostic("Backend account removal completed for \(accountID).")
+        } catch {
+            lastErrorMessage = "Removed locally, but cloud removal failed for \(displayName): \(error.localizedDescription)"
+            recordDiagnostic("Backend account removal failed for \(accountID): \(error.localizedDescription)")
+        }
     }
 
     private func syncTransactions(for connection: PlaidConnection, environment: PlaidEnvironment) async throws -> PlaidSyncResult {

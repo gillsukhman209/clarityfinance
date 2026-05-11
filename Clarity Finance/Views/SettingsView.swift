@@ -16,7 +16,7 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                ScreenTitle(title: "Settings", subtitle: "Local Plaid setup for Sandbox and personal bank linking.")
+                ScreenTitle(title: "Settings", subtitle: "Account linking, notifications, and cloud restore.")
 
                 VStack(alignment: .leading, spacing: 14) {
                     SectionHeader(title: "Plaid credentials")
@@ -112,11 +112,20 @@ struct SettingsView: View {
                     Button {
                         Task { await store.syncAllConnections() }
                     } label: {
-                        Label(store.data.connections.isEmpty ? "Connect Sandbox data" : "Sync Sandbox data", systemImage: "arrow.triangle.2.circlepath")
+                        Label("Sync linked banks", systemImage: "arrow.triangle.2.circlepath")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(PrimaryClarityButtonStyle())
                     .disabled(store.isSyncing)
+
+                    Button {
+                        Task { await store.restoreCloudData() }
+                    } label: {
+                        Label("Restore cloud data", systemImage: "icloud.and.arrow.down.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(SecondaryClarityButtonStyle())
+                    .disabled(store.isSyncing || !store.isSignedIn)
 
                     Button {
                         store.clearLocalData()

@@ -22,12 +22,20 @@
       "destination": "/api/plaid/gateway?route=accounts/get"
     },
     {
+      "source": "/api/plaid/accounts/remove",
+      "destination": "/api/plaid/gateway?route=accounts/remove"
+    },
+    {
       "source": "/api/plaid/transactions/sync",
       "destination": "/api/plaid/gateway?route=transactions/sync"
     },
     {
       "source": "/api/plaid/transactions/refresh",
       "destination": "/api/plaid/gateway?route=transactions/refresh"
+    },
+    {
+      "source": "/api/plaid/data/snapshot",
+      "destination": "/api/plaid/gateway?route=data/snapshot"
     }
   ],
   "crons": [

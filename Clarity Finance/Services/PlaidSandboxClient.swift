@@ -451,6 +451,26 @@ struct PlaidSandboxClient {
         )
     }
 
+    func restoreBackendSnapshot(authSession: SupabaseAuthSession) async throws -> BackendFinanceSnapshot {
+        let response = try await postBackend(
+            path: "/api/plaid/data/snapshot",
+            body: EmptyBackendRequest(),
+            response: BackendSnapshotResponse.self,
+            authSession: authSession
+        )
+
+        return response.snapshot
+    }
+
+    func removeBackendAccount(authSession: SupabaseAuthSession, accountID: String) async throws {
+        _ = try await postBackend(
+            path: "/api/plaid/accounts/remove",
+            body: BackendAccountRemoveRequest(accountID: accountID),
+            response: EmptyBackendResponse.self,
+            authSession: authSession
+        )
+    }
+
     private func post<RequestBody: Encodable, ResponseBody: Decodable>(
         path: String,
         body: RequestBody,
@@ -592,6 +612,163 @@ private struct BackendPlaidError: Decodable {
 }
 
 private struct EmptyPlaidResponse: Decodable {}
+
+private struct EmptyBackendRequest: Encodable {}
+
+private struct EmptyBackendResponse: Decodable {}
+
+struct BackendFinanceSnapshot {
+    var connections: [PlaidConnection]
+    var accounts: [FinancialAccount]
+    var transactions: [FinanceTransaction]
+    var removedAccountIDs: Set<String>
+}
+
+private struct BackendSnapshotResponse: Decodable {
+    var connections: [BackendConnection]
+    var accounts: [BackendAccount]
+    var transactions: [BackendTransaction]
+    var removedAccountIDs: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case connections
+        case accounts
+        case transactions
+        case removedAccountIDs = "removed_account_ids"
+    }
+
+    var snapshot: BackendFinanceSnapshot {
+        BackendFinanceSnapshot(
+            connections: connections.map(\.connection),
+            accounts: accounts.map(\.account),
+            transactions: transactions.map(\.transaction),
+            removedAccountIDs: Set(removedAccountIDs)
+        )
+    }
+}
+
+private struct BackendConnection: Decodable {
+    var id: String
+    var itemID: String
+    var institutionID: String
+    var institutionName: String
+    var accessToken: String
+    var environment: PlaidEnvironment
+    var cursor: String?
+    var connectedAt: String?
+    var lastSyncedAt: String?
+
+    var connection: PlaidConnection {
+        PlaidConnection(
+            id: id,
+            itemID: itemID,
+            institutionID: institutionID,
+            institutionName: institutionName,
+            accessToken: accessToken,
+            environment: environment,
+            cursor: cursor,
+            connectedAt: Self.parseDate(connectedAt) ?? Date(),
+            lastSyncedAt: Self.parseDate(lastSyncedAt)
+        )
+    }
+
+    private static func parseDate(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        if let date = ISO8601DateFormatter().date(from: value) {
+            return date
+        }
+        return BackendTransaction.dateFormatter.date(from: value)
+    }
+}
+
+private struct BackendAccount: Decodable {
+    var id: String
+    var institutionName: String
+    var name: String
+    var mask: String?
+    var kind: AccountKind
+    var currentBalance: Double
+    var availableBalance: Double?
+    var currencyCode: String
+    var isManual: Bool
+
+    var account: FinancialAccount {
+        FinancialAccount(
+            id: id,
+            institutionName: institutionName,
+            name: name,
+            mask: mask,
+            kind: kind,
+            currentBalance: currentBalance,
+            availableBalance: availableBalance,
+            currencyCode: currencyCode,
+            isManual: isManual
+        )
+    }
+}
+
+private struct BackendTransaction: Decodable {
+    var id: String
+    var accountID: String
+    var merchantName: String
+    var originalName: String
+    var amount: Double
+    var date: String
+    var category: String
+    var pending: Bool
+    var source: String
+
+    var transaction: FinanceTransaction {
+        FinanceTransaction(
+            id: id,
+            accountID: accountID,
+            merchantName: MerchantNameCleaner.clean(merchantName),
+            originalName: originalName,
+            amount: amount,
+            date: Self.dateFormatter.date(from: date) ?? Date(),
+            category: resolvedCategory,
+            pending: pending,
+            source: source
+        )
+    }
+
+    private var resolvedCategory: TransactionCategory {
+        TransactionCategory(rawValue: category) ?? PlaidTransactionCategoryMapper.resolve(category)
+    }
+
+    static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter
+    }()
+}
+
+private enum PlaidTransactionCategoryMapper {
+    static func resolve(_ value: String) -> TransactionCategory {
+        let text = value.lowercased()
+        if text.contains("income") { return .income }
+        if text.contains("subscription") || text.contains("digital") || text.contains("software") { return .subscriptions }
+        if text.contains("food") || text.contains("restaurant") { return .food }
+        if text.contains("transport") || text.contains("travel") || text.contains("gas") { return .transport }
+        if text.contains("rent") || text.contains("home") { return .housing }
+        if text.contains("entertainment") { return .entertainment }
+        if text.contains("medical") || text.contains("health") { return .health }
+        if text.contains("utility") { return .utilities }
+        if text.contains("transfer") || text.contains("loan") { return .transfer }
+        if text.contains("shop") || text.contains("merchandise") { return .shopping }
+        return .other
+    }
+}
+
+private struct BackendAccountRemoveRequest: Encodable {
+    var accountID: String
+
+    enum CodingKeys: String, CodingKey {
+        case accountID = "account_id"
+    }
+}
 
 private struct BackendLinkTokenCreateRequest: Encodable {
     var environment: String

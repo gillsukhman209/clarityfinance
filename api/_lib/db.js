@@ -86,6 +86,33 @@ async function ensureSchema() {
     `;
 
     await db`
+      create table if not exists accounts (
+        account_id text primary key,
+        user_id text,
+        item_id text not null references plaid_items(item_id) on delete cascade,
+        institution_name text,
+        name text not null,
+        mask text,
+        kind text not null default 'manual',
+        current_balance numeric not null default 0,
+        available_balance numeric,
+        currency_code text not null default 'USD',
+        raw jsonb not null default '{}'::jsonb,
+        updated_at timestamptz not null default now()
+      )
+    `;
+
+    await db`
+      create table if not exists removed_accounts (
+        user_id text not null,
+        account_id text not null,
+        item_id text,
+        removed_at timestamptz not null default now(),
+        primary key (user_id, account_id)
+      )
+    `;
+
+    await db`
       create table if not exists notification_events (
         id bigserial primary key,
         user_id text,
@@ -105,8 +132,13 @@ async function ensureSchema() {
     await db`alter table devices add column if not exists user_id text`;
     await db`alter table plaid_items add column if not exists user_id text`;
     await db`alter table plaid_items alter column device_id drop not null`;
+    await db`alter table accounts add column if not exists user_id text`;
     await db`alter table notification_events add column if not exists user_id text`;
     await db`create index if not exists transactions_item_date_idx on transactions(item_id, date desc)`;
+    await db`create index if not exists transactions_account_date_idx on transactions(account_id, date desc)`;
+    await db`create index if not exists accounts_user_idx on accounts(user_id)`;
+    await db`create index if not exists accounts_item_idx on accounts(item_id)`;
+    await db`create index if not exists removed_accounts_user_idx on removed_accounts(user_id)`;
     await db`create index if not exists devices_user_idx on devices(user_id)`;
     await db`create index if not exists plaid_items_user_idx on plaid_items(user_id)`;
     await db`create index if not exists notification_events_device_created_idx on notification_events(device_id, created_at desc)`;
