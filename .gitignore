@@ -4,3 +4,4 @@ Clarity Finance/LocalSecrets.swift
 node_modules/
 .env.local
 .env.*.local
+.vercel
