@@ -9,9 +9,9 @@ struct SupabaseAuthConfiguration: Equatable {
 
     static func load() -> SupabaseAuthConfiguration? {
         guard
-            let urlString = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_URL") as? String,
+            let urlString = Bundle.main.object(forInfoDictionaryKey: "ClaritySupabaseURL") as? String,
             let url = URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines)),
-            let anonKey = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_ANON_KEY") as? String,
+            let anonKey = Bundle.main.object(forInfoDictionaryKey: "ClaritySupabaseAnonKey") as? String,
             !anonKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
             return nil

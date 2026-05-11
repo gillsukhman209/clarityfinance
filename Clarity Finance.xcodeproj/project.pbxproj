@@ -9,6 +9,7 @@
 /* Begin PBXFileReference section */
 		1A0D58642FAEF3B1003243C2 /* Clarity Finance.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Clarity Finance.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A0D58802FB10000003243C2 /* App.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = App.xcconfig; sourceTree = "<group>"; };
+		1A0D58822FB20000003243C2 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -51,6 +52,7 @@
 			isa = PBXGroup;
 			children = (
 				1A0D58802FB10000003243C2 /* App.xcconfig */,
+				1A0D58822FB20000003243C2 /* Info.plist */,
 			);
 			path = Config;
 			sourceTree = "<group>";
@@ -275,9 +277,10 @@
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_SUPABASE_ANON_KEY = "$(SUPABASE_ANON_KEY)";
-				INFOPLIST_KEY_SUPABASE_URL = "$(SUPABASE_URL)";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Config/Info.plist;
+				INFOPLIST_KEY_ClaritySupabaseAnonKey = "$(SUPABASE_ANON_KEY)";
+				INFOPLIST_KEY_ClaritySupabaseURL = "$(SUPABASE_URL)";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -325,9 +328,10 @@
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_SUPABASE_ANON_KEY = "$(SUPABASE_ANON_KEY)";
-				INFOPLIST_KEY_SUPABASE_URL = "$(SUPABASE_URL)";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Config/Info.plist;
+				INFOPLIST_KEY_ClaritySupabaseAnonKey = "$(SUPABASE_ANON_KEY)";
+				INFOPLIST_KEY_ClaritySupabaseURL = "$(SUPABASE_URL)";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
