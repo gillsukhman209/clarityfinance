@@ -24,6 +24,7 @@ final class FinanceStore {
     var apnsDeviceToken: String?
     var notificationStatusMessage: String?
     var notificationErrorMessage: String?
+    var notificationPermissionStatus = "unknown"
     var isNotificationActionRunning = false
 
     private let plaidClient = PlaidSandboxClient()
@@ -64,6 +65,7 @@ final class FinanceStore {
         save()
         recordDiagnostic("FinanceStore initialized. Diagnostics build active.")
         observeAPNSTokenUpdates()
+        Task { await refreshNotificationPermissionStatus() }
     }
 
     var totalBalance: Double {
@@ -367,12 +369,26 @@ final class FinanceStore {
         recordDiagnostic("Diagnostics cleared.")
     }
 
+    func refreshNotificationPermissionStatus() async {
+        #if os(iOS)
+        let status = await PushPermissionService.authorizationStatusLabel()
+        notificationPermissionStatus = status
+        recordDiagnostic("Push authorization status: \(status). APNs token present=\(apnsDeviceToken != nil).")
+        #else
+        notificationPermissionStatus = "macOS"
+        #endif
+    }
+
     func setViralNotificationsEnabled(_ isEnabled: Bool) {
+        recordDiagnostic("Viral notifications toggle changed to \(isEnabled).")
         viralNotificationPreferences.isEnabled = isEnabled
         notificationErrorMessage = nil
         if isEnabled {
             notificationStatusMessage = "Asking iPhone for notification permission..."
-            Task { await enableViralNotifications() }
+            Task {
+                await refreshNotificationPermissionStatus()
+                await enableViralNotifications()
+            }
         } else {
             notificationStatusMessage = "Viral notifications are off."
             Task { await registerNotificationDeviceIfPossible() }
@@ -380,19 +396,24 @@ final class FinanceStore {
     }
 
     func updateViralNotificationTone(_ tone: ViralNotificationTone) {
+        recordDiagnostic("Viral notification tone changed to \(tone.rawValue).")
         viralNotificationPreferences.tone = tone
         Task { await registerNotificationDeviceIfPossible() }
     }
 
     func updateViralNotificationPrivacy(_ privacy: ViralNotificationPrivacy) {
+        recordDiagnostic("Viral notification privacy changed to \(privacy.rawValue).")
         viralNotificationPreferences.privacy = privacy
         Task { await registerNotificationDeviceIfPossible() }
     }
 
     func enableViralNotifications() async {
         #if os(iOS)
+        recordDiagnostic("enableViralNotifications() entered. tokenPresent=\(apnsDeviceToken != nil), isEnabled=\(viralNotificationPreferences.isEnabled).")
         do {
             let granted = try await PushPermissionService.requestAuthorizationAndRegister()
+            await refreshNotificationPermissionStatus()
+            recordDiagnostic("Push permission request returned granted=\(granted).")
             guard granted else {
                 viralNotificationPreferences.isEnabled = false
                 statusMessage = "Notifications were not allowed."
@@ -405,13 +426,14 @@ final class FinanceStore {
             statusMessage = "Notifications allowed. Waiting for device token..."
             notificationStatusMessage = "Notifications allowed. Waiting for Apple device token..."
             notificationErrorMessage = nil
+            recordDiagnostic("Notification permission allowed. Waiting for APNs token callback.")
             await registerNotificationDeviceIfPossible()
-            await registerPlaidItemsWithNotificationBackend()
         } catch {
             viralNotificationPreferences.isEnabled = false
             lastErrorMessage = error.localizedDescription
             notificationStatusMessage = nil
             notificationErrorMessage = error.localizedDescription
+            recordDiagnostic("enableViralNotifications() failed: \(error.localizedDescription)")
         }
         #else
         viralNotificationPreferences.isEnabled = false
@@ -420,14 +442,59 @@ final class FinanceStore {
         #endif
     }
 
+    private func requestAPNSTokenIfMissing(context: String) async -> Bool {
+        #if os(iOS)
+        if apnsDeviceToken != nil {
+            return true
+        }
+
+        recordDiagnostic("\(context): APNs token missing, requesting remote notification registration again.")
+        notificationStatusMessage = "Asking Apple for this iPhone's push token..."
+        notificationErrorMessage = nil
+
+        do {
+            let granted = try await PushPermissionService.requestAuthorizationAndRegister()
+            await refreshNotificationPermissionStatus()
+            guard granted else {
+                viralNotificationPreferences.isEnabled = false
+                notificationStatusMessage = nil
+                notificationErrorMessage = "Notifications are not allowed for Clarity."
+                recordDiagnostic("\(context): APNs token request stopped because permission is not granted.")
+                return false
+            }
+        } catch {
+            notificationStatusMessage = nil
+            notificationErrorMessage = error.localizedDescription
+            recordDiagnostic("\(context): APNs token request failed: \(error.localizedDescription)")
+            return false
+        }
+
+        if apnsDeviceToken == nil {
+            notificationStatusMessage = "Still waiting for Apple device token. Watch Xcode logs for APNs success/failure."
+            recordDiagnostic("\(context): APNs registration requested, but token callback has not arrived yet.")
+            return false
+        }
+
+        return true
+        #else
+        notificationErrorMessage = "Viral push notifications are available on iPhone only."
+        return false
+        #endif
+    }
+
     func registerPlaidItemsWithNotificationBackend() async {
+        recordDiagnostic("Register Plaid tapped/entered. enabled=\(viralNotificationPreferences.isEnabled), tokenPresent=\(apnsDeviceToken != nil), plaidConnections=\(data.connections.count).")
+        await refreshNotificationPermissionStatus()
         guard viralNotificationPreferences.isEnabled else {
             notificationErrorMessage = "Turn on Viral notifications first."
+            recordDiagnostic("Register Plaid stopped: viral notifications are off.")
             return
         }
+        guard await requestAPNSTokenIfMissing(context: "Register Plaid") else { return }
         guard let apnsDeviceToken else {
             statusMessage = "Waiting for APNs device token before registering Plaid updates."
             notificationStatusMessage = "Waiting for Apple device token. Try again in a few seconds."
+            recordDiagnostic("Register Plaid stopped: APNs token missing. Permission status=\(notificationPermissionStatus).")
             return
         }
 
@@ -438,10 +505,12 @@ final class FinanceStore {
 
         let client = NotificationBackendClient(preferences: viralNotificationPreferences)
         do {
+            recordDiagnostic("Registering APNs device with backend. deviceID=\(notificationDeviceID), tokenLength=\(apnsDeviceToken.count).")
             try await client.registerDevice(deviceID: notificationDeviceID, apnsToken: apnsDeviceToken)
 
             var registeredCount = 0
             for connection in data.connections {
+                recordDiagnostic("Registering Plaid item with backend. itemID=\(connection.itemID), institution=\(connection.institutionName), environment=\(connection.environment.rawValue).")
                 try await client.registerItem(deviceID: notificationDeviceID, connection: connection)
                 registeredCount += 1
             }
@@ -463,12 +532,17 @@ final class FinanceStore {
     }
 
     func registerNotificationDeviceIfPossible() async {
-        guard let apnsDeviceToken else { return }
+        recordDiagnostic("registerNotificationDeviceIfPossible() entered. enabled=\(viralNotificationPreferences.isEnabled), tokenPresent=\(apnsDeviceToken != nil).")
+        guard let apnsDeviceToken else {
+            recordDiagnostic("registerNotificationDeviceIfPossible() skipped: APNs token missing.")
+            return
+        }
 
         do {
             notificationStatusMessage = "Registering this iPhone with Clarity backend..."
             notificationErrorMessage = nil
             let client = NotificationBackendClient(preferences: viralNotificationPreferences)
+            recordDiagnostic("Registering device with notification backend. deviceID=\(notificationDeviceID), tokenLength=\(apnsDeviceToken.count).")
             try await client.registerDevice(deviceID: notificationDeviceID, apnsToken: apnsDeviceToken)
             notificationStatusMessage = "This iPhone is registered for viral notifications."
             recordDiagnostic("Registered APNs device token with notification backend.")
@@ -481,17 +555,16 @@ final class FinanceStore {
     }
 
     func sendTestViralNotification() async {
+        recordDiagnostic("Test notification tapped/entered. enabled=\(viralNotificationPreferences.isEnabled), tokenPresent=\(apnsDeviceToken != nil).")
+        await refreshNotificationPermissionStatus()
         guard viralNotificationPreferences.isEnabled else {
             lastErrorMessage = "Turn on Viral notifications first."
             notificationErrorMessage = "Turn on Viral notifications first."
+            recordDiagnostic("Test notification stopped: viral notifications are off.")
             return
         }
 
-        guard apnsDeviceToken != nil else {
-            lastErrorMessage = "No APNs device token yet. Try again in a few seconds."
-            notificationStatusMessage = "Waiting for Apple device token. Try again in a few seconds."
-            return
-        }
+        guard await requestAPNSTokenIfMissing(context: "Test notification") else { return }
 
         isNotificationActionRunning = true
         notificationStatusMessage = "Registering iPhone before sending test..."
@@ -501,14 +574,17 @@ final class FinanceStore {
         do {
             await registerNotificationDeviceIfPossible()
             if notificationErrorMessage != nil {
+                recordDiagnostic("Test notification stopped after device registration error: \(notificationErrorMessage ?? "unknown").")
                 return
             }
             notificationStatusMessage = "Sending test notification..."
             let client = NotificationBackendClient(preferences: viralNotificationPreferences)
+            recordDiagnostic("Sending test notification through backend. deviceID=\(notificationDeviceID).")
             try await client.sendTestNotification(deviceID: notificationDeviceID)
             statusMessage = "Test notification requested."
             notificationStatusMessage = "Test notification requested. Watch your iPhone lock screen."
             notificationErrorMessage = nil
+            recordDiagnostic("Test notification request succeeded.")
         } catch {
             lastErrorMessage = error.localizedDescription
             notificationStatusMessage = nil

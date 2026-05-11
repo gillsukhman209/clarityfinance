@@ -626,6 +626,10 @@ private struct SettingsTab: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(ClarityColor.secondaryText)
 
+            Text("Permission: \(store.notificationPermissionStatus)")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ClarityColor.secondaryText)
+
             if store.data.connections.isEmpty {
                 Text("No Plaid bank is connected yet. Test can still register this iPhone, but real transaction alerts need a Plaid account.")
                     .font(.caption)

@@ -57,16 +57,19 @@ final class ClarityAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        print("[Clarity Push] AppDelegate didFinishLaunching. Setting UNUserNotificationCenter delegate.")
         UNUserNotificationCenter.current().delegate = self
         return true
     }
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
+        print("[Clarity Push] APNs didRegisterForRemoteNotifications tokenLength=\(token.count).")
         NotificationCenter.default.post(name: .clarityAPNSTokenDidUpdate, object: token)
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        print("[Clarity Push] APNs didFailToRegisterForRemoteNotifications error=\(error.localizedDescription).")
         NotificationCenter.default.post(name: .clarityAPNSTokenDidFail, object: error.localizedDescription)
     }
 
@@ -79,15 +82,42 @@ final class ClarityAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
 }
 
 enum PushPermissionService {
+    static func authorizationStatusLabel() async -> String {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        return label(for: settings.authorizationStatus)
+    }
+
     static func requestAuthorizationAndRegister() async throws -> Bool {
         let center = UNUserNotificationCenter.current()
+        let beforeSettings = await center.notificationSettings()
+        print("[Clarity Push] Authorization before request: \(label(for: beforeSettings.authorizationStatus)).")
         let granted = try await center.requestAuthorization(options: [.alert, .badge, .sound])
+        let afterSettings = await center.notificationSettings()
+        print("[Clarity Push] Authorization request completed. granted=\(granted), status=\(label(for: afterSettings.authorizationStatus)), alertSetting=\(afterSettings.alertSetting.rawValue), soundSetting=\(afterSettings.soundSetting.rawValue), badgeSetting=\(afterSettings.badgeSetting.rawValue).")
         guard granted else { return false }
 
         await MainActor.run {
+            print("[Clarity Push] Calling UIApplication.registerForRemoteNotifications(). isRegisteredBefore=\(UIApplication.shared.isRegisteredForRemoteNotifications).")
             UIApplication.shared.registerForRemoteNotifications()
         }
         return true
+    }
+
+    private static func label(for status: UNAuthorizationStatus) -> String {
+        switch status {
+        case .notDetermined:
+            return "notDetermined"
+        case .denied:
+            return "denied"
+        case .authorized:
+            return "authorized"
+        case .provisional:
+            return "provisional"
+        case .ephemeral:
+            return "ephemeral"
+        @unknown default:
+            return "unknown(\(status.rawValue))"
+        }
     }
 }
 #endif
@@ -158,14 +188,16 @@ struct NotificationBackendClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder.notificationBackend.encode(body)
 
+        print("[Clarity Push] Backend POST \(endpointURL.absoluteString).")
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw BackendError.badResponse("Notification backend did not return HTTP.")
         }
 
+        let responseBody = String(data: data, encoding: .utf8) ?? "<non-utf8 body>"
+        print("[Clarity Push] Backend response \(httpResponse.statusCode) for \(path): \(responseBody).")
         guard (200..<300).contains(httpResponse.statusCode) else {
-            let message = String(data: data, encoding: .utf8) ?? "Notification backend failed."
-            throw BackendError.badResponse(message)
+            throw BackendError.badResponse(responseBody)
         }
     }
 }
