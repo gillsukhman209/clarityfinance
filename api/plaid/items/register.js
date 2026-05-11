@@ -1,36 +1,9 @@
-const { encrypt } = require("../../_lib/crypto");
+const { decrypt, encrypt } = require("../../_lib/crypto");
 const { ensureSchema, sql } = require("../../_lib/db");
 const { methodNotAllowed, readJson, sendJson } = require("../../_lib/http");
 const { updateItemWebhook } = require("../../_lib/plaid");
+const { webhookURLForRequest } = require("../../_lib/requestUrl");
 const { requireSupabaseUser } = require("../../_lib/supabaseAuth");
-
-function validHTTPSURL(value) {
-  const trimmed = String(value || "").trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  try {
-    const url = new URL(trimmed);
-    return url.protocol === "https:" ? url.toString() : null;
-  } catch {
-    return null;
-  }
-}
-
-function webhookURLForRequest(req) {
-  const configuredURL = validHTTPSURL(process.env.PLAID_WEBHOOK_URL);
-  if (configuredURL) {
-    return configuredURL;
-  }
-
-  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim();
-  if (!host) {
-    return null;
-  }
-
-  return `https://${host}/api/plaid/webhook`;
-}
 
 module.exports = async function handler(req, res) {
   if (req.method !== "POST") {
@@ -45,8 +18,8 @@ module.exports = async function handler(req, res) {
     const accessToken = String(body.access_token || "").trim();
     const environment = body.environment === "production" ? "production" : "sandbox";
 
-    if (!deviceID || !itemID || !accessToken) {
-      return sendJson(res, 400, { ok: false, error: "device_id_item_id_access_token_required" });
+    if (!deviceID || !itemID) {
+      return sendJson(res, 400, { ok: false, error: "device_id_and_item_id_required" });
     }
 
     await ensureSchema();
@@ -62,44 +35,68 @@ module.exports = async function handler(req, res) {
       return sendJson(res, 403, { ok: false, error: "device_not_registered_for_user" });
     }
 
-    const encryptedAccessToken = encrypt(accessToken);
-    await db`
-      insert into plaid_items (
-        item_id,
-        user_id,
-        device_id,
-        access_token_encrypted,
-        environment,
-        institution_id,
-        institution_name,
-        cursor,
-        updated_at
-      )
-      values (
-        ${itemID},
-        ${user.id},
-        ${deviceID},
-        ${encryptedAccessToken},
-        ${environment},
-        ${body.institution_id || null},
-        ${body.institution_name || null},
-        ${body.cursor || null},
-        now()
-      )
-      on conflict (item_id)
-      do update set
-        user_id = excluded.user_id,
-        device_id = excluded.device_id,
-        access_token_encrypted = excluded.access_token_encrypted,
-        environment = excluded.environment,
-        institution_id = excluded.institution_id,
-        institution_name = excluded.institution_name,
-        cursor = coalesce(excluded.cursor, plaid_items.cursor),
-        updated_at = now()
+    let storedAccessToken = accessToken;
+    const existingItems = await db`
+      select access_token_encrypted, environment
+      from plaid_items
+      where item_id = ${itemID}
+        and user_id = ${user.id}
+      limit 1
     `;
+    if (!storedAccessToken && existingItems.length > 0) {
+      storedAccessToken = decrypt(existingItems[0].access_token_encrypted);
+    }
+    if (!storedAccessToken) {
+      return sendJson(res, 404, { ok: false, error: "plaid_item_not_found_for_user" });
+    }
+
+    if (accessToken) {
+      const encryptedAccessToken = encrypt(accessToken);
+      await db`
+        insert into plaid_items (
+          item_id,
+          user_id,
+          device_id,
+          access_token_encrypted,
+          environment,
+          institution_id,
+          institution_name,
+          cursor,
+          updated_at
+        )
+        values (
+          ${itemID},
+          ${user.id},
+          ${deviceID},
+          ${encryptedAccessToken},
+          ${environment},
+          ${body.institution_id || null},
+          ${body.institution_name || null},
+          ${body.cursor || null},
+          now()
+        )
+        on conflict (item_id)
+        do update set
+          user_id = excluded.user_id,
+          device_id = excluded.device_id,
+          access_token_encrypted = excluded.access_token_encrypted,
+          environment = excluded.environment,
+          institution_id = excluded.institution_id,
+          institution_name = excluded.institution_name,
+          cursor = coalesce(excluded.cursor, plaid_items.cursor),
+          updated_at = now()
+      `;
+    } else {
+      await db`
+        update plaid_items
+        set device_id = ${deviceID}, updated_at = now()
+        where item_id = ${itemID}
+          and user_id = ${user.id}
+      `;
+    }
 
     const webhookURL = webhookURLForRequest(req);
-    const webhook = await updateItemWebhook({ accessToken, environment, webhookURL });
+    const webhook = await updateItemWebhook({ accessToken: storedAccessToken, environment, webhookURL });
     return sendJson(res, 200, { ok: true, user_id: user.id, webhook });
   } catch (error) {
     return sendJson(res, error.statusCode || 500, { ok: false, error: error.message, plaid: error.payload });

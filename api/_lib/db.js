@@ -57,7 +57,7 @@ async function ensureSchema() {
       create table if not exists plaid_items (
         item_id text primary key,
         user_id text,
-        device_id text not null references devices(device_id) on delete cascade,
+        device_id text references devices(device_id) on delete set null,
         access_token_encrypted text not null,
         environment text not null,
         institution_id text,
@@ -104,6 +104,7 @@ async function ensureSchema() {
 
     await db`alter table devices add column if not exists user_id text`;
     await db`alter table plaid_items add column if not exists user_id text`;
+    await db`alter table plaid_items alter column device_id drop not null`;
     await db`alter table notification_events add column if not exists user_id text`;
     await db`create index if not exists transactions_item_date_idx on transactions(item_id, date desc)`;
     await db`create index if not exists devices_user_idx on devices(user_id)`;

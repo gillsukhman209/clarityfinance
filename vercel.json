@@ -4,6 +4,32 @@
       "maxDuration": 60
     }
   },
+  "rewrites": [
+    {
+      "source": "/api/plaid/link/token/create",
+      "destination": "/api/plaid/gateway?route=link/token/create"
+    },
+    {
+      "source": "/api/plaid/link/token/get",
+      "destination": "/api/plaid/gateway?route=link/token/get"
+    },
+    {
+      "source": "/api/plaid/item/public_token/exchange",
+      "destination": "/api/plaid/gateway?route=item/public_token/exchange"
+    },
+    {
+      "source": "/api/plaid/accounts/get",
+      "destination": "/api/plaid/gateway?route=accounts/get"
+    },
+    {
+      "source": "/api/plaid/transactions/sync",
+      "destination": "/api/plaid/gateway?route=transactions/sync"
+    },
+    {
+      "source": "/api/plaid/transactions/refresh",
+      "destination": "/api/plaid/gateway?route=transactions/refresh"
+    }
+  ],
   "crons": [
     {
       "path": "/api/notifications/expensive-day",

@@ -38,6 +38,82 @@ async function postPlaid(environment, path, body) {
   return payload;
 }
 
+function publicTokenMetadata(publicToken) {
+  return {
+    institutionID: publicToken?.institution_id || publicToken?.institutionID || null,
+    institutionName: publicToken?.institution_name || publicToken?.institutionName || null
+  };
+}
+
+async function createHostedLinkToken({ environment, userID, linkCustomizationName, webhookURL }) {
+  const credentials = plaidCredentials(environment);
+  const body = {
+    client_id: credentials.clientID,
+    secret: credentials.secret,
+    client_name: "Clarity Finance",
+    products: ["transactions"],
+    country_codes: ["US"],
+    language: "en",
+    user: {
+      client_user_id: userID
+    },
+    transactions: {
+      days_requested: 730
+    },
+    hosted_link: {
+      completion_redirect_uri: null,
+      is_mobile_app: false,
+      url_lifetime_seconds: 1800
+    }
+  };
+
+  if (linkCustomizationName) {
+    body.link_customization_name = linkCustomizationName;
+  }
+
+  if (webhookURL) {
+    body.webhook = webhookURL;
+  }
+
+  return postPlaid(environment, "/link/token/create", body);
+}
+
+async function getLinkToken({ environment, linkToken }) {
+  const credentials = plaidCredentials(environment);
+  return postPlaid(environment, "/link/token/get", {
+    client_id: credentials.clientID,
+    secret: credentials.secret,
+    link_token: linkToken
+  });
+}
+
+async function exchangePublicToken({ environment, publicToken }) {
+  const credentials = plaidCredentials(environment);
+  return postPlaid(environment, "/item/public_token/exchange", {
+    client_id: credentials.clientID,
+    secret: credentials.secret,
+    public_token: publicToken
+  });
+}
+
+async function fetchAccounts({ accessToken, environment }) {
+  const credentials = plaidCredentials(environment);
+  return postPlaid(environment, "/accounts/get", {
+    client_id: credentials.clientID,
+    secret: credentials.secret,
+    access_token: accessToken
+  });
+}
+
+async function refreshTransactions({ accessToken, environment }) {
+  const credentials = plaidCredentials(environment);
+  return postPlaid(environment, "/transactions/refresh", {
+    client_id: credentials.clientID,
+    secret: credentials.secret,
+    access_token: accessToken
+  });
+}
+
 async function updateItemWebhook({ accessToken, environment, webhookURL }) {
   const normalizedWebhookURL = String(webhookURL || "").trim();
   if (!normalizedWebhookURL) {
@@ -114,7 +190,13 @@ function normalizePlaidTransaction(transaction, itemID) {
 }
 
 module.exports = {
+  createHostedLinkToken,
+  exchangePublicToken,
+  fetchAccounts,
+  getLinkToken,
   normalizePlaidTransaction,
+  publicTokenMetadata,
+  refreshTransactions,
   syncTransactions,
   updateItemWebhook
 };

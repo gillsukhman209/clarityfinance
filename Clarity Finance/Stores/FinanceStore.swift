@@ -779,11 +779,6 @@ final class FinanceStore {
     }
 
     func syncAllConnections() async {
-        guard credentials.isSandboxComplete || credentials.isProductionComplete else {
-            lastErrorMessage = "Add your Plaid credentials in Settings first."
-            return
-        }
-
         guard !data.connections.isEmpty else {
             await connectSandboxInstitution()
             return
@@ -797,8 +792,8 @@ final class FinanceStore {
             for index in data.connections.indices {
                 var connection = data.connections[index]
                 let environment = environment(for: connection)
-                try? await plaidClient.refreshTransactions(credentials: credentials, connection: connection, environment: environment)
-                let accounts = try await plaidClient.fetchAccounts(credentials: credentials, connection: connection, environment: environment)
+                try? await refreshTransactions(for: connection, environment: environment)
+                let accounts = try await fetchAccounts(for: connection, environment: environment)
                 let sync = try await syncTransactionsWithInitialPolling(
                     connection: &connection,
                     environment: environment,
@@ -845,11 +840,11 @@ final class FinanceStore {
     }
 
     func connectRealBank() async {
-        recordDiagnostic("connectRealBank() entered. isSyncing=\(isSyncing), production credentials complete=\(credentials.isProductionComplete).")
+        recordDiagnostic("connectRealBank() entered. isSyncing=\(isSyncing), signedIn=\(authSession != nil).")
 
-        guard credentials.isProductionComplete else {
-            lastErrorMessage = "Add your Plaid client ID and Production secret in Settings first."
-            recordDiagnostic("connectRealBank() stopped: missing production credentials.")
+        guard let authSession else {
+            lastErrorMessage = "Sign in with Apple before connecting a real bank."
+            recordDiagnostic("connectRealBank() stopped: missing Supabase auth session.")
             return
         }
 
@@ -857,11 +852,12 @@ final class FinanceStore {
         statusMessage = "Creating an in-app Plaid bank link..."
         lastErrorMessage = nil
         hostedLinkSession = nil
-        recordDiagnostic("Calling Plaid /link/token/create in Production. linkCustomization=\(credentials.normalizedLinkCustomizationName ?? "default"), daysRequested=\(PlaidSandboxClient.requestedTransactionHistoryDays).")
+        recordDiagnostic("Calling backend /api/plaid/link/token/create in Production. linkCustomization=\(credentials.normalizedLinkCustomizationName ?? "default"), daysRequested=\(PlaidSandboxClient.requestedTransactionHistoryDays).")
 
         do {
             let hostedSession = try await plaidClient.createHostedLinkSession(
-                credentials: credentials,
+                authSession: authSession,
+                linkCustomizationName: credentials.normalizedLinkCustomizationName,
                 environment: .production
             )
 
@@ -886,9 +882,9 @@ final class FinanceStore {
             return
         }
 
-        guard credentials.isProductionComplete else {
-            lastErrorMessage = "Add your Plaid client ID and Production secret in Settings first."
-            recordDiagnostic("finishRealBankConnection() stopped: missing production credentials.")
+        guard let authSession else {
+            lastErrorMessage = "Sign in with Apple before importing a real bank."
+            recordDiagnostic("finishRealBankConnection() stopped: missing Supabase auth session.")
             return
         }
 
@@ -907,12 +903,12 @@ final class FinanceStore {
 
             recordDiagnostic("Exchanging public token for access token.")
             var connection = try await plaidClient.exchangePublicToken(
-                credentials: credentials,
+                authSession: authSession,
                 publicToken: publicToken,
                 environment: .production
             )
             recordDiagnostic("Public token exchanged. institution=\(connection.institutionName), itemIDLength=\(connection.itemID.count). Fetching accounts and transactions.")
-            let accounts = try await plaidClient.fetchAccounts(credentials: credentials, connection: connection, environment: .production)
+            let accounts = try await fetchAccounts(for: connection, environment: .production)
             let sync = try await syncTransactionsWithInitialPolling(
                 connection: &connection,
                 environment: .production,
@@ -1036,7 +1032,7 @@ final class FinanceStore {
                 let environment = environment(for: connection)
                 connection.cursor = nil
 
-                let accounts = try await plaidClient.fetchAccounts(credentials: credentials, connection: connection, environment: environment)
+                let accounts = try await fetchAccounts(for: connection, environment: environment)
                 let sync = try await syncTransactionsWithInitialPolling(
                     connection: &connection,
                     environment: environment,
@@ -1357,11 +1353,7 @@ final class FinanceStore {
         var combinedRemovedTransactionIDs: [String] = []
 
         for attempt in 1...6 {
-            let sync = try await plaidClient.syncTransactions(
-                credentials: credentials,
-                connection: connection,
-                environment: environment
-            )
+            let sync = try await syncTransactions(for: connection, environment: environment)
 
             combinedTransactions.append(contentsOf: sync.transactions)
             combinedRemovedTransactionIDs.append(contentsOf: sync.removedTransactionIDs)
@@ -1385,6 +1377,44 @@ final class FinanceStore {
             removedTransactionIDs: combinedRemovedTransactionIDs,
             nextCursor: connection.cursor
         )
+    }
+
+    private func shouldUseBackendPlaid(for connection: PlaidConnection, environment: PlaidEnvironment) -> Bool {
+        environment == .production || connection.accessToken.isEmpty
+    }
+
+    private func fetchAccounts(for connection: PlaidConnection, environment: PlaidEnvironment) async throws -> [FinancialAccount] {
+        if shouldUseBackendPlaid(for: connection, environment: environment) {
+            guard let authSession else {
+                throw PlaidError.api("Sign in with Apple before syncing this Plaid account.")
+            }
+            return try await plaidClient.fetchAccounts(authSession: authSession, connection: connection)
+        }
+
+        return try await plaidClient.fetchAccounts(credentials: credentials, connection: connection, environment: environment)
+    }
+
+    private func syncTransactions(for connection: PlaidConnection, environment: PlaidEnvironment) async throws -> PlaidSyncResult {
+        if shouldUseBackendPlaid(for: connection, environment: environment) {
+            guard let authSession else {
+                throw PlaidError.api("Sign in with Apple before syncing this Plaid account.")
+            }
+            return try await plaidClient.syncTransactions(authSession: authSession, connection: connection)
+        }
+
+        return try await plaidClient.syncTransactions(credentials: credentials, connection: connection, environment: environment)
+    }
+
+    private func refreshTransactions(for connection: PlaidConnection, environment: PlaidEnvironment) async throws {
+        if shouldUseBackendPlaid(for: connection, environment: environment) {
+            guard let authSession else {
+                throw PlaidError.api("Sign in with Apple before refreshing this Plaid account.")
+            }
+            try await plaidClient.refreshTransactions(authSession: authSession, connection: connection)
+            return
+        }
+
+        try await plaidClient.refreshTransactions(credentials: credentials, connection: connection, environment: environment)
     }
 
     private func recordTransactionCoverage(context: String, accounts: [FinancialAccount]) {
@@ -1845,10 +1875,14 @@ final class FinanceStore {
     }
 
     private func waitForHostedPublicTokens(linkToken: String) async throws -> [PlaidHostedPublicToken] {
+        guard let authSession else {
+            throw PlaidError.api("Sign in with Apple before importing a real bank.")
+        }
+
         for attempt in 1...8 {
             recordDiagnostic("Hosted Link poll attempt \(attempt)/8.")
             let tokens = try await plaidClient.fetchHostedLinkPublicTokens(
-                credentials: credentials,
+                authSession: authSession,
                 linkToken: linkToken,
                 environment: .production
             )

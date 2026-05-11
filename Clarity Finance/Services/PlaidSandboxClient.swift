@@ -7,9 +7,9 @@ struct PlaidCredentials: Equatable {
     var linkCustomizationName: String
 
     static let bundledSandbox = PlaidCredentials(
-        clientID: "6924ab26d99796001d9a0831",
-        sandboxSecret: "d304ada4984f45d8d9ddbadfb694b7",
-        productionSecret: "c7114af7920b8905773318448475ba",
+        clientID: "",
+        sandboxSecret: "",
+        productionSecret: "",
         linkCustomizationName: ""
     )
 
@@ -277,6 +277,27 @@ struct PlaidSandboxClient {
         )
     }
 
+    func createHostedLinkSession(
+        authSession: SupabaseAuthSession,
+        linkCustomizationName: String?,
+        environment: PlaidEnvironment
+    ) async throws -> PlaidHostedLinkSession {
+        let response = try await postBackend(
+            path: "/api/plaid/link/token/create",
+            body: BackendLinkTokenCreateRequest(
+                environment: environment.rawValue,
+                linkCustomizationName: linkCustomizationName
+            ),
+            response: LinkTokenCreateResponse.self,
+            authSession: authSession
+        )
+
+        return PlaidHostedLinkSession(
+            linkToken: response.linkToken,
+            hostedLinkURL: response.hostedLinkURL
+        )
+    }
+
     func fetchHostedLinkPublicTokens(
         credentials: PlaidCredentials,
         linkToken: String,
@@ -291,6 +312,24 @@ struct PlaidSandboxClient {
             ),
             response: LinkTokenGetResponse.self,
             environment: environment
+        )
+
+        return response.publicTokens
+    }
+
+    func fetchHostedLinkPublicTokens(
+        authSession: SupabaseAuthSession,
+        linkToken: String,
+        environment: PlaidEnvironment
+    ) async throws -> [PlaidHostedPublicToken] {
+        let response = try await postBackend(
+            path: "/api/plaid/link/token/get",
+            body: BackendLinkTokenGetRequest(
+                environment: environment.rawValue,
+                linkToken: linkToken
+            ),
+            response: LinkTokenGetResponse.self,
+            authSession: authSession
         )
 
         return response.publicTokens
@@ -325,6 +364,93 @@ struct PlaidSandboxClient {
         )
     }
 
+    func exchangePublicToken(
+        authSession: SupabaseAuthSession,
+        publicToken: PlaidHostedPublicToken,
+        environment: PlaidEnvironment
+    ) async throws -> PlaidConnection {
+        let exchange = try await postBackend(
+            path: "/api/plaid/item/public_token/exchange",
+            body: BackendPublicTokenExchangeRequest(
+                environment: environment.rawValue,
+                publicToken: publicToken.publicToken,
+                institutionID: publicToken.institutionID,
+                institutionName: publicToken.institutionName
+            ),
+            response: PublicTokenExchangeResponse.self,
+            authSession: authSession
+        )
+
+        return PlaidConnection(
+            id: UUID().uuidString,
+            itemID: exchange.itemID,
+            institutionID: publicToken.institutionID ?? "linked-institution",
+            institutionName: publicToken.institutionName ?? "Linked Bank",
+            accessToken: exchange.accessToken,
+            environment: environment,
+            cursor: nil,
+            connectedAt: Date(),
+            lastSyncedAt: nil
+        )
+    }
+
+    func fetchAccounts(
+        authSession: SupabaseAuthSession,
+        connection: PlaidConnection
+    ) async throws -> [FinancialAccount] {
+        let response = try await postBackend(
+            path: "/api/plaid/accounts/get",
+            body: BackendItemRequest(itemID: connection.itemID, cursor: nil),
+            response: AccountsResponse.self,
+            authSession: authSession
+        )
+
+        return response.accounts.map { account in
+            FinancialAccount(
+                id: account.accountID,
+                institutionName: connection.institutionName,
+                name: account.name,
+                mask: account.mask,
+                kind: account.accountKind,
+                currentBalance: account.balances.current ?? 0,
+                availableBalance: account.balances.available,
+                currencyCode: account.balances.isoCurrencyCode ?? "USD",
+                isManual: false
+            )
+        }
+    }
+
+    func syncTransactions(
+        authSession: SupabaseAuthSession,
+        connection: PlaidConnection
+    ) async throws -> PlaidSyncResult {
+        let response = try await postBackend(
+            path: "/api/plaid/transactions/sync",
+            body: BackendItemRequest(itemID: connection.itemID, cursor: connection.cursor),
+            response: TransactionsSyncResponse.self,
+            authSession: authSession
+        )
+
+        let source = connection.environment.transactionSource
+        return PlaidSyncResult(
+            transactions: (response.added + response.modified).map { $0.financeTransaction(source: source) },
+            removedTransactionIDs: response.removed.map(\.transactionID),
+            nextCursor: response.nextCursor
+        )
+    }
+
+    func refreshTransactions(
+        authSession: SupabaseAuthSession,
+        connection: PlaidConnection
+    ) async throws {
+        _ = try await postBackend(
+            path: "/api/plaid/transactions/refresh",
+            body: BackendItemRequest(itemID: connection.itemID, cursor: nil),
+            response: EmptyPlaidResponse.self,
+            authSession: authSession
+        )
+    }
+
     private func post<RequestBody: Encodable, ResponseBody: Decodable>(
         path: String,
         body: RequestBody,
@@ -351,6 +477,41 @@ struct PlaidSandboxClient {
         } catch {
             let keys = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?.keys.sorted().joined(separator: ", ") ?? "unknown"
             throw PlaidError.api("Plaid response could not be decoded for \(path). Top-level keys: \(keys). Decode error: \(error.localizedDescription)")
+        }
+    }
+
+    private func postBackend<RequestBody: Encodable, ResponseBody: Decodable>(
+        path: String,
+        body: RequestBody,
+        response: ResponseBody.Type,
+        authSession: SupabaseAuthSession
+    ) async throws -> ResponseBody {
+        guard let url = URL(string: "https://clarityfinance-gilt.vercel.app" + path) else {
+            throw PlaidError.invalidResponse
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(authSession.accessToken)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONEncoder.plaid.encode(body)
+
+        let (data, urlResponse) = try await session.data(for: request)
+        guard let httpResponse = urlResponse as? HTTPURLResponse else {
+            throw PlaidError.invalidResponse
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let message = (try? JSONDecoder().decode(BackendPlaidError.self, from: data).message)
+                ?? (String(data: data, encoding: .utf8) ?? "Backend returned HTTP \(httpResponse.statusCode).")
+            throw PlaidError.api(message)
+        }
+
+        do {
+            return try JSONDecoder.plaid.decode(ResponseBody.self, from: data)
+        } catch {
+            let keys = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?.keys.sorted().joined(separator: ", ") ?? "unknown"
+            throw PlaidError.api("Backend Plaid response could not be decoded for \(path). Top-level keys: \(keys). Decode error: \(error.localizedDescription)")
         }
     }
 }
@@ -423,7 +584,58 @@ private struct PlaidAPIError: Decodable {
     }
 }
 
+private struct BackendPlaidError: Decodable {
+    var error: String?
+    var message: String {
+        error ?? "Backend Plaid request failed."
+    }
+}
+
 private struct EmptyPlaidResponse: Decodable {}
+
+private struct BackendLinkTokenCreateRequest: Encodable {
+    var environment: String
+    var linkCustomizationName: String?
+
+    enum CodingKeys: String, CodingKey {
+        case environment
+        case linkCustomizationName = "link_customization_name"
+    }
+}
+
+private struct BackendLinkTokenGetRequest: Encodable {
+    var environment: String
+    var linkToken: String
+
+    enum CodingKeys: String, CodingKey {
+        case environment
+        case linkToken = "link_token"
+    }
+}
+
+private struct BackendPublicTokenExchangeRequest: Encodable {
+    var environment: String
+    var publicToken: String
+    var institutionID: String?
+    var institutionName: String?
+
+    enum CodingKeys: String, CodingKey {
+        case environment
+        case publicToken = "public_token"
+        case institutionID = "institution_id"
+        case institutionName = "institution_name"
+    }
+}
+
+private struct BackendItemRequest: Encodable {
+    var itemID: String
+    var cursor: String?
+
+    enum CodingKeys: String, CodingKey {
+        case itemID = "item_id"
+        case cursor
+    }
+}
 
 private struct LinkTokenCreateRequest: Encodable {
     var clientID: String

@@ -162,7 +162,7 @@ struct NotificationBackendClient {
             body: RegisterPlaidItemRequest(
                 deviceID: deviceID,
                 itemID: connection.itemID,
-                accessToken: connection.accessToken,
+                accessToken: connection.accessToken.isEmpty ? nil : connection.accessToken,
                 environment: connection.environment.rawValue,
                 institutionID: connection.institutionID,
                 institutionName: connection.institutionName,
@@ -227,7 +227,7 @@ private struct RegisterDeviceRequest: Encodable {
 private struct RegisterPlaidItemRequest: Encodable {
     var deviceID: String
     var itemID: String
-    var accessToken: String
+    var accessToken: String?
     var environment: String
     var institutionID: String
     var institutionName: String
