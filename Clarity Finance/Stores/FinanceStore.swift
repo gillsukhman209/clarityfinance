@@ -26,6 +26,10 @@ final class FinanceStore {
     var notificationErrorMessage: String?
     var notificationPermissionStatus = "unknown"
     var isNotificationActionRunning = false
+    var authSession: SupabaseAuthSession?
+    var authStatusMessage: String?
+    var authErrorMessage: String?
+    var isAuthActionRunning = false
 
     private let plaidClient = PlaidSandboxClient()
     private let fileURL: URL
@@ -54,6 +58,7 @@ final class FinanceStore {
         }
         viralNotificationPreferences = Self.loadViralNotificationPreferences()
         notificationDeviceID = Self.loadNotificationDeviceID()
+        authSession = Self.loadSavedAuthSession()
 
         removeLegacySampleDataIfNeeded()
         normalizeStoredTransactionMerchantNames()
@@ -66,6 +71,14 @@ final class FinanceStore {
         recordDiagnostic("FinanceStore initialized. Diagnostics build active.")
         observeAPNSTokenUpdates()
         Task { await refreshNotificationPermissionStatus() }
+    }
+
+    var isSignedIn: Bool {
+        authSession != nil
+    }
+
+    var supabaseConfigurationStatus: String {
+        SupabaseAuthConfiguration.load() == nil ? "Supabase config missing." : "Supabase config ready."
     }
 
     var totalBalance: Double {
@@ -367,6 +380,84 @@ final class FinanceStore {
     func clearDiagnostics() {
         diagnosticLog.removeAll()
         recordDiagnostic("Diagnostics cleared.")
+    }
+
+    func signInWithApple(identityToken: String, nonce: String?) async {
+        recordDiagnostic("Supabase Apple sign-in started. identityTokenLength=\(identityToken.count), noncePresent=\(nonce != nil).")
+        guard let nonce, !nonce.isEmpty else {
+            authErrorMessage = SupabaseAuthError.missingAppleNonce.localizedDescription
+            recordDiagnostic("Supabase Apple sign-in stopped: missing nonce.")
+            return
+        }
+
+        guard let configuration = SupabaseAuthConfiguration.load() else {
+            authErrorMessage = SupabaseAuthError.missingConfiguration.localizedDescription
+            recordDiagnostic("Supabase Apple sign-in stopped: missing Supabase configuration.")
+            return
+        }
+
+        isAuthActionRunning = true
+        authStatusMessage = "Signing in with Apple..."
+        authErrorMessage = nil
+        defer { isAuthActionRunning = false }
+
+        do {
+            let service = SupabaseAuthService(configuration: configuration)
+            let session = try await service.signInWithApple(identityToken: identityToken, nonce: nonce)
+            authSession = session
+            saveAuthSession(session)
+            authStatusMessage = "Signed in as \(session.displayName)."
+            recordDiagnostic("Supabase Apple sign-in succeeded. userID=\(session.userID), emailPresent=\(session.email != nil).")
+            await verifyCurrentAuthSessionWithBackend()
+        } catch {
+            authErrorMessage = error.localizedDescription
+            authStatusMessage = nil
+            recordDiagnostic("Supabase Apple sign-in failed: \(error.localizedDescription)")
+        }
+    }
+
+    func verifyCurrentAuthSessionWithBackend() async {
+        recordDiagnostic("Backend auth verification started. signedIn=\(authSession != nil).")
+        guard let authSession else {
+            authErrorMessage = "Sign in first."
+            recordDiagnostic("Backend auth verification stopped: no Supabase session.")
+            return
+        }
+
+        guard let configuration = SupabaseAuthConfiguration.load() else {
+            authErrorMessage = SupabaseAuthError.missingConfiguration.localizedDescription
+            recordDiagnostic("Backend auth verification stopped: missing Supabase configuration.")
+            return
+        }
+
+        isAuthActionRunning = true
+        authStatusMessage = "Checking backend auth..."
+        authErrorMessage = nil
+        defer { isAuthActionRunning = false }
+
+        do {
+            let service = SupabaseAuthService(configuration: configuration)
+            let user = try await service.verifyWithBackend(authSession)
+            authStatusMessage = "Backend verified \(user.email?.isEmpty == false ? user.email! : user.id)."
+            recordDiagnostic("Backend auth verification succeeded. userID=\(user.id), emailPresent=\(user.email != nil).")
+        } catch {
+            authErrorMessage = error.localizedDescription
+            authStatusMessage = nil
+            recordDiagnostic("Backend auth verification failed: \(error.localizedDescription)")
+        }
+    }
+
+    func signOut() {
+        recordDiagnostic("Supabase sign-out requested.")
+        authSession = nil
+        authStatusMessage = "Signed out."
+        authErrorMessage = nil
+        do {
+            try KeychainStore.delete(account: "supabase-auth-session")
+        } catch {
+            authErrorMessage = error.localizedDescription
+            recordDiagnostic("Failed to delete Supabase auth session: \(error.localizedDescription)")
+        }
     }
 
     func refreshNotificationPermissionStatus() async {
@@ -1842,6 +1933,30 @@ final class FinanceStore {
         #else
         return nil
         #endif
+    }
+
+    private func saveAuthSession(_ session: SupabaseAuthSession) {
+        do {
+            let data = try JSONEncoder.store.encode(session)
+            let encoded = String(decoding: data, as: UTF8.self)
+            try KeychainStore.save(encoded, account: "supabase-auth-session")
+            recordDiagnostic("Saved Supabase auth session to Keychain.")
+        } catch {
+            authErrorMessage = error.localizedDescription
+            recordDiagnostic("Failed to save Supabase auth session: \(error.localizedDescription)")
+        }
+    }
+
+    private static func loadSavedAuthSession() -> SupabaseAuthSession? {
+        guard
+            let encoded = try? KeychainStore.read(account: "supabase-auth-session"),
+            let data = encoded.data(using: .utf8),
+            let session = try? JSONDecoder.store.decode(SupabaseAuthSession.self, from: data)
+        else {
+            return nil
+        }
+
+        return session
     }
 
     private func observeAPNSTokenUpdates() {

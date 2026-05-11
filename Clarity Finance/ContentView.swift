@@ -1,3 +1,4 @@
+import AuthenticationServices
 import SwiftUI
 import UniformTypeIdentifiers
 #if os(iOS)
@@ -471,11 +472,13 @@ private struct SettingsTab: View {
     @Binding var isImportingStatement: Bool
     @Binding var showsDiagnostics: Bool
     @State private var accountPendingRemoval: FinancialAccount?
+    @State private var appleSignInNonce: String?
 
     var body: some View {
         ScreenScroll {
             HeaderView(title: "Settings", subtitle: "Connect, import, refresh.")
 
+            authCard
             addAccountCard
             notificationsCard
             connectedAccountsCard
@@ -492,6 +495,112 @@ private struct SettingsTab: View {
                 secondaryButton: .cancel()
             )
         }
+    }
+
+    private var authCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(title: "Account", systemImage: "person.crop.circle.fill")
+
+            if let authSession = store.authSession {
+                HStack(spacing: 12) {
+                    IconBadge(symbolName: "checkmark.seal.fill")
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Signed in")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(ClarityColor.primaryText)
+
+                        Text(authSession.displayName)
+                            .font(.caption)
+                            .foregroundStyle(ClarityColor.secondaryText)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+
+                HStack(spacing: 10) {
+                    Button {
+                        Task { await store.verifyCurrentAuthSessionWithBackend() }
+                    } label: {
+                        Label("Check backend", systemImage: "lock.shield.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(SecondaryClarityButtonStyle())
+                    .disabled(store.isAuthActionRunning)
+
+                    Button(role: .destructive) {
+                        store.signOut()
+                    } label: {
+                        Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(SecondaryClarityButtonStyle())
+                    .disabled(store.isAuthActionRunning)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Save your Clarity data to your account.")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(ClarityColor.primaryText)
+
+                    Text(store.supabaseConfigurationStatus)
+                        .font(.caption)
+                        .foregroundStyle(ClarityColor.secondaryText)
+                }
+
+                SignInWithAppleButton(.signIn) { request in
+                    let nonce = SupabaseAuthService.randomNonceString()
+                    appleSignInNonce = nonce
+                    request.requestedScopes = [.email, .fullName]
+                    request.nonce = SupabaseAuthService.sha256(nonce)
+                    store.recordDiagnostic("Sign in with Apple request prepared for Supabase.")
+                } onCompletion: { result in
+                    switch result {
+                    case .success(let authorization):
+                        guard
+                            let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+                            let identityTokenData = credential.identityToken,
+                            let identityToken = String(data: identityTokenData, encoding: .utf8)
+                        else {
+                            store.authErrorMessage = SupabaseAuthError.missingAppleIdentityToken.localizedDescription
+                            store.recordDiagnostic("Sign in with Apple completed without an identity token.")
+                            return
+                        }
+
+                        Task {
+                            await store.signInWithApple(identityToken: identityToken, nonce: appleSignInNonce)
+                        }
+                    case .failure(let error):
+                        store.authErrorMessage = error.localizedDescription
+                        store.recordDiagnostic("Sign in with Apple failed before Supabase exchange: \(error.localizedDescription)")
+                    }
+                }
+                .signInWithAppleButtonStyle(.black)
+                .frame(height: 48)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .disabled(store.isAuthActionRunning || SupabaseAuthConfiguration.load() == nil)
+            }
+
+            if store.isAuthActionRunning {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Working...")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(ClarityColor.secondaryText)
+                }
+            }
+
+            if let authStatusMessage = store.authStatusMessage {
+                StatusBanner(message: authStatusMessage, isError: false)
+            }
+
+            if let authErrorMessage = store.authErrorMessage {
+                StatusBanner(message: authErrorMessage, isError: true)
+            }
+        }
+        .padding(18)
+        .clarityCard(radius: 20)
     }
 
     private var addAccountCard: some View {

@@ -1,4 +1,6 @@
 // Local-only secrets live in Secrets.local.xcconfig.
 // That file is gitignored and should never be committed.
 OPENAI_API_KEY =
+SUPABASE_URL =
+SUPABASE_ANON_KEY =
 #include? "Secrets.local.xcconfig"
