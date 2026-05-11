@@ -1,0 +1,14 @@
+{
+  "name": "clarity-finance-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test backend-tests/*.test.js"
+  },
+  "dependencies": {
+    "jsonwebtoken": "^9.0.2",
+    "postgres": "^3.4.7"
+  },
+  "devDependencies": {}
+}

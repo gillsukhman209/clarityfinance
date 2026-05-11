@@ -477,6 +477,7 @@ private struct SettingsTab: View {
             HeaderView(title: "Settings", subtitle: "Connect, import, refresh.")
 
             addAccountCard
+            notificationsCard
             connectedAccountsCard
             toolsCard
             statusArea
@@ -552,6 +553,97 @@ private struct SettingsTab: View {
                 }
                 .buttonStyle(SecondaryClarityButtonStyle())
             }
+        }
+        .padding(18)
+        .clarityCard(radius: 20)
+    }
+
+    private var notificationsCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(title: "Viral notifications", systemImage: "bell.badge.fill")
+
+            #if os(iOS)
+            Toggle(isOn: Binding(
+                get: { store.viralNotificationPreferences.isEnabled },
+                set: { store.setViralNotificationsEnabled($0) }
+            )) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Notify when Plaid finds spending")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(ClarityColor.primaryText)
+                    Text("Max 1/day. Merchant and amount are shown by default.")
+                        .font(.caption)
+                        .foregroundStyle(ClarityColor.secondaryText)
+                }
+            }
+
+            Picker("Tone", selection: Binding(
+                get: { store.viralNotificationPreferences.tone },
+                set: { store.updateViralNotificationTone($0) }
+            )) {
+                ForEach(ViralNotificationTone.allCases) { tone in
+                    Text(tone.title).tag(tone)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Picker("Privacy", selection: Binding(
+                get: { store.viralNotificationPreferences.privacy },
+                set: { store.updateViralNotificationPrivacy($0) }
+            )) {
+                ForEach(ViralNotificationPrivacy.allCases) { privacy in
+                    Text(privacy.title).tag(privacy)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            HStack(spacing: 10) {
+                Button {
+                    Task { await store.registerPlaidItemsWithNotificationBackend() }
+                } label: {
+                    if store.isNotificationActionRunning {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        Label("Register Plaid", systemImage: "link.badge.plus")
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .buttonStyle(SecondaryClarityButtonStyle())
+                .disabled(!store.viralNotificationPreferences.isEnabled || store.isNotificationActionRunning)
+
+                Button {
+                    Task { await store.sendTestViralNotification() }
+                } label: {
+                    Label("Test", systemImage: "paperplane.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryClarityButtonStyle())
+                .disabled(!store.viralNotificationPreferences.isEnabled || store.isNotificationActionRunning)
+            }
+
+            Text(store.apnsDeviceToken == nil ? "APNs token: waiting until notifications are allowed." : "APNs token: ready.")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ClarityColor.secondaryText)
+
+            if store.data.connections.isEmpty {
+                Text("No Plaid bank is connected yet. Test can still register this iPhone, but real transaction alerts need a Plaid account.")
+                    .font(.caption)
+                    .foregroundStyle(ClarityColor.secondaryText)
+            }
+
+            if let notificationStatusMessage = store.notificationStatusMessage {
+                StatusBanner(message: notificationStatusMessage, isError: false)
+            }
+
+            if let notificationErrorMessage = store.notificationErrorMessage {
+                StatusBanner(message: notificationErrorMessage, isError: true)
+            }
+            #else
+            Text("Viral push notifications are configured from the iPhone app.")
+                .font(.subheadline)
+                .foregroundStyle(ClarityColor.secondaryText)
+            #endif
         }
         .padding(18)
         .clarityCard(radius: 20)

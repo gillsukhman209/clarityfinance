@@ -1,3 +1,6 @@
 Config/Secrets.local.xcconfig
 Clarity Finance/LocalSecrets.swift
 *.xcuserstate
+node_modules/
+.env.local
+.env.*.local

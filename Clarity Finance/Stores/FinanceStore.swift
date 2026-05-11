@@ -15,6 +15,16 @@ final class FinanceStore {
     var recurringDiagnostics: [String] = []
     var isAnalyzingSpending = false
     var openAIAPIKey: String
+    var viralNotificationPreferences: ViralNotificationPreferences {
+        didSet {
+            saveViralNotificationPreferences()
+        }
+    }
+    var notificationDeviceID: String
+    var apnsDeviceToken: String?
+    var notificationStatusMessage: String?
+    var notificationErrorMessage: String?
+    var isNotificationActionRunning = false
 
     private let plaidClient = PlaidSandboxClient()
     private let fileURL: URL
@@ -41,6 +51,8 @@ final class FinanceStore {
         if savedOpenAIAPIKey.isEmpty, let bundledOpenAIAPIKey {
             try? KeychainStore.save(bundledOpenAIAPIKey, account: "openai-api-key")
         }
+        viralNotificationPreferences = Self.loadViralNotificationPreferences()
+        notificationDeviceID = Self.loadNotificationDeviceID()
 
         removeLegacySampleDataIfNeeded()
         normalizeStoredTransactionMerchantNames()
@@ -51,6 +63,7 @@ final class FinanceStore {
         }
         save()
         recordDiagnostic("FinanceStore initialized. Diagnostics build active.")
+        observeAPNSTokenUpdates()
     }
 
     var totalBalance: Double {
@@ -354,6 +367,156 @@ final class FinanceStore {
         recordDiagnostic("Diagnostics cleared.")
     }
 
+    func setViralNotificationsEnabled(_ isEnabled: Bool) {
+        viralNotificationPreferences.isEnabled = isEnabled
+        notificationErrorMessage = nil
+        if isEnabled {
+            notificationStatusMessage = "Asking iPhone for notification permission..."
+            Task { await enableViralNotifications() }
+        } else {
+            notificationStatusMessage = "Viral notifications are off."
+            Task { await registerNotificationDeviceIfPossible() }
+        }
+    }
+
+    func updateViralNotificationTone(_ tone: ViralNotificationTone) {
+        viralNotificationPreferences.tone = tone
+        Task { await registerNotificationDeviceIfPossible() }
+    }
+
+    func updateViralNotificationPrivacy(_ privacy: ViralNotificationPrivacy) {
+        viralNotificationPreferences.privacy = privacy
+        Task { await registerNotificationDeviceIfPossible() }
+    }
+
+    func enableViralNotifications() async {
+        #if os(iOS)
+        do {
+            let granted = try await PushPermissionService.requestAuthorizationAndRegister()
+            guard granted else {
+                viralNotificationPreferences.isEnabled = false
+                statusMessage = "Notifications were not allowed."
+                notificationStatusMessage = nil
+                notificationErrorMessage = "Notifications were not allowed."
+                return
+            }
+
+            viralNotificationPreferences.isEnabled = true
+            statusMessage = "Notifications allowed. Waiting for device token..."
+            notificationStatusMessage = "Notifications allowed. Waiting for Apple device token..."
+            notificationErrorMessage = nil
+            await registerNotificationDeviceIfPossible()
+            await registerPlaidItemsWithNotificationBackend()
+        } catch {
+            viralNotificationPreferences.isEnabled = false
+            lastErrorMessage = error.localizedDescription
+            notificationStatusMessage = nil
+            notificationErrorMessage = error.localizedDescription
+        }
+        #else
+        viralNotificationPreferences.isEnabled = false
+        lastErrorMessage = "Viral push notifications are available on iPhone only."
+        notificationErrorMessage = "Viral push notifications are available on iPhone only."
+        #endif
+    }
+
+    func registerPlaidItemsWithNotificationBackend() async {
+        guard viralNotificationPreferences.isEnabled else {
+            notificationErrorMessage = "Turn on Viral notifications first."
+            return
+        }
+        guard let apnsDeviceToken else {
+            statusMessage = "Waiting for APNs device token before registering Plaid updates."
+            notificationStatusMessage = "Waiting for Apple device token. Try again in a few seconds."
+            return
+        }
+
+        isNotificationActionRunning = true
+        notificationStatusMessage = "Registering device and Plaid accounts..."
+        notificationErrorMessage = nil
+        defer { isNotificationActionRunning = false }
+
+        let client = NotificationBackendClient(preferences: viralNotificationPreferences)
+        do {
+            try await client.registerDevice(deviceID: notificationDeviceID, apnsToken: apnsDeviceToken)
+
+            var registeredCount = 0
+            for connection in data.connections {
+                try await client.registerItem(deviceID: notificationDeviceID, connection: connection)
+                registeredCount += 1
+            }
+
+            statusMessage = registeredCount == 0
+                ? "Notifications are ready. Connect a bank to register Plaid updates."
+                : "Registered \(registeredCount) Plaid item(s) for viral notifications."
+            notificationStatusMessage = registeredCount == 0
+                ? "Device registered. Connect a Plaid bank account for transaction alerts."
+                : "Ready. Registered \(registeredCount) Plaid account connection(s)."
+            notificationErrorMessage = nil
+            recordDiagnostic("Registered \(registeredCount) Plaid item(s) with notification backend.")
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            notificationStatusMessage = nil
+            notificationErrorMessage = error.localizedDescription
+            recordDiagnostic("Notification backend item registration failed: \(error.localizedDescription)")
+        }
+    }
+
+    func registerNotificationDeviceIfPossible() async {
+        guard let apnsDeviceToken else { return }
+
+        do {
+            notificationStatusMessage = "Registering this iPhone with Clarity backend..."
+            notificationErrorMessage = nil
+            let client = NotificationBackendClient(preferences: viralNotificationPreferences)
+            try await client.registerDevice(deviceID: notificationDeviceID, apnsToken: apnsDeviceToken)
+            notificationStatusMessage = "This iPhone is registered for viral notifications."
+            recordDiagnostic("Registered APNs device token with notification backend.")
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            notificationStatusMessage = nil
+            notificationErrorMessage = error.localizedDescription
+            recordDiagnostic("Notification device registration failed: \(error.localizedDescription)")
+        }
+    }
+
+    func sendTestViralNotification() async {
+        guard viralNotificationPreferences.isEnabled else {
+            lastErrorMessage = "Turn on Viral notifications first."
+            notificationErrorMessage = "Turn on Viral notifications first."
+            return
+        }
+
+        guard apnsDeviceToken != nil else {
+            lastErrorMessage = "No APNs device token yet. Try again in a few seconds."
+            notificationStatusMessage = "Waiting for Apple device token. Try again in a few seconds."
+            return
+        }
+
+        isNotificationActionRunning = true
+        notificationStatusMessage = "Registering iPhone before sending test..."
+        notificationErrorMessage = nil
+        defer { isNotificationActionRunning = false }
+
+        do {
+            await registerNotificationDeviceIfPossible()
+            if notificationErrorMessage != nil {
+                return
+            }
+            notificationStatusMessage = "Sending test notification..."
+            let client = NotificationBackendClient(preferences: viralNotificationPreferences)
+            try await client.sendTestNotification(deviceID: notificationDeviceID)
+            statusMessage = "Test notification requested."
+            notificationStatusMessage = "Test notification requested. Watch your iPhone lock screen."
+            notificationErrorMessage = nil
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            notificationStatusMessage = nil
+            notificationErrorMessage = error.localizedDescription
+            recordDiagnostic("Test notification failed: \(error.localizedDescription)")
+        }
+    }
+
     func saveCredentials(clientID: String, sandboxSecret: String, productionSecret: String, linkCustomizationName: String, openAIAPIKey: String) {
         recordDiagnostic("Saving credentials. clientID set=\(!clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), sandbox secret set=\(!sandboxSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), production secret set=\(!productionSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), link customization set=\(!linkCustomizationName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), OpenAI key set=\(!openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).")
 
@@ -422,6 +585,7 @@ final class FinanceStore {
             recordTransactionCoverage(context: "sandbox import", accounts: accounts)
             await analyzeSpendingWithAI(onlyMissing: true)
             statusMessage = "Connected \(connection.institutionName): \(accounts.count) accounts, \(sync.transactions.count) transactions."
+            await registerPlaidItemsWithNotificationBackend()
         } catch {
             lastErrorMessage = error.localizedDescription
         }
@@ -468,6 +632,7 @@ final class FinanceStore {
             save()
             await analyzeSpendingWithAI(onlyMissing: true)
             statusMessage = "Spending is up to date."
+            await registerPlaidItemsWithNotificationBackend()
         } catch {
             lastErrorMessage = error.localizedDescription
         }
@@ -581,6 +746,7 @@ final class FinanceStore {
             recordTransactionCoverage(context: "real bank import", accounts: accounts)
             await analyzeSpendingWithAI(onlyMissing: true)
             statusMessage = "Connected \(connection.institutionName): \(accounts.count) accounts, \(sync.transactions.count) transactions."
+            await registerPlaidItemsWithNotificationBackend()
             recordDiagnostic("Real bank import completed successfully.")
         } catch {
             lastErrorMessage = error.localizedDescription
@@ -1600,6 +1766,62 @@ final class FinanceStore {
         #else
         return nil
         #endif
+    }
+
+    private func observeAPNSTokenUpdates() {
+        #if os(iOS)
+        NotificationCenter.default.addObserver(
+            forName: .clarityAPNSTokenDidUpdate,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self, let token = notification.object as? String else { return }
+            Task { @MainActor in
+                self.apnsDeviceToken = token
+                self.recordDiagnostic("APNs device token received. length=\(token.count).")
+                await self.registerNotificationDeviceIfPossible()
+                await self.registerPlaidItemsWithNotificationBackend()
+            }
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: .clarityAPNSTokenDidFail,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self else { return }
+            let message = notification.object as? String ?? "Unknown APNs registration error."
+            Task { @MainActor in
+                self.lastErrorMessage = message
+                self.recordDiagnostic("APNs device token registration failed: \(message)")
+            }
+        }
+        #endif
+    }
+
+    private func saveViralNotificationPreferences() {
+        if let encoded = try? JSONEncoder.store.encode(viralNotificationPreferences) {
+            UserDefaults.standard.set(encoded, forKey: "viral-notification-preferences")
+        }
+    }
+
+    private static func loadViralNotificationPreferences() -> ViralNotificationPreferences {
+        guard let data = UserDefaults.standard.data(forKey: "viral-notification-preferences"),
+              let decoded = try? JSONDecoder.store.decode(ViralNotificationPreferences.self, from: data) else {
+            return .defaults
+        }
+        return decoded
+    }
+
+    private static func loadNotificationDeviceID() -> String {
+        if let existing = UserDefaults.standard.string(forKey: "notification-device-id"),
+           !existing.isEmpty {
+            return existing
+        }
+
+        let created = UUID().uuidString
+        UserDefaults.standard.set(created, forKey: "notification-device-id")
+        return created
     }
 
     private func removeLegacySampleDataIfNeeded() {

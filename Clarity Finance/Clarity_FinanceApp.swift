@@ -9,6 +9,10 @@ import SwiftUI
 
 @main
 struct Clarity_FinanceApp: App {
+    #if os(iOS)
+    @UIApplicationDelegateAdaptor(ClarityAppDelegate.self) private var appDelegate
+    #endif
+
     @State private var store: FinanceStore
 
     @MainActor

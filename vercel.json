@@ -1,0 +1,13 @@
+{
+  "functions": {
+    "api/**/*.js": {
+      "maxDuration": 60
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/notifications/expensive-day",
+      "schedule": "0 16 * * *"
+    }
+  ]
+}
