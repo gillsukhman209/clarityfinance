@@ -1,5 +1,6 @@
 const { ensureSchema, sql } = require("../_lib/db");
 const { methodNotAllowed, readJson, sendJson } = require("../_lib/http");
+const { requireSupabaseUser } = require("../_lib/supabaseAuth");
 
 module.exports = async function handler(req, res) {
   if (req.method !== "POST") {
@@ -7,6 +8,7 @@ module.exports = async function handler(req, res) {
   }
 
   try {
+    const user = await requireSupabaseUser(req);
     const body = await readJson(req);
     const deviceID = String(body.device_id || "").trim();
     const apnsToken = String(body.apns_token || "").trim();
@@ -22,10 +24,11 @@ module.exports = async function handler(req, res) {
     await ensureSchema();
     const db = sql();
     await db`
-      insert into devices (device_id, apns_token, platform, enabled, tone, privacy, updated_at)
-      values (${deviceID}, ${apnsToken}, ${platform}, ${enabled}, ${tone}, ${privacy}, now())
+      insert into devices (device_id, user_id, apns_token, platform, enabled, tone, privacy, updated_at)
+      values (${deviceID}, ${user.id}, ${apnsToken}, ${platform}, ${enabled}, ${tone}, ${privacy}, now())
       on conflict (device_id)
       do update set
+        user_id = excluded.user_id,
         apns_token = excluded.apns_token,
         platform = excluded.platform,
         enabled = excluded.enabled,
@@ -34,8 +37,8 @@ module.exports = async function handler(req, res) {
         updated_at = now()
     `;
 
-    return sendJson(res, 200, { ok: true });
+    return sendJson(res, 200, { ok: true, user_id: user.id });
   } catch (error) {
-    return sendJson(res, 500, { ok: false, error: error.message });
+    return sendJson(res, error.statusCode || 500, { ok: false, error: error.message });
   }
 };

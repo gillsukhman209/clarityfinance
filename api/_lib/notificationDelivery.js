@@ -27,9 +27,10 @@ async function wasRecentlySent(db, deviceID, candidate) {
   return rows.length > 0;
 }
 
-async function recordEvent(db, deviceID, candidate, status, reason, itemID = null) {
+async function recordEvent(db, device, candidate, status, reason, itemID = null) {
   await db`
     insert into notification_events (
+      user_id,
       device_id,
       item_id,
       event_type,
@@ -41,7 +42,8 @@ async function recordEvent(db, deviceID, candidate, status, reason, itemID = nul
       reason
     )
     values (
-      ${deviceID},
+      ${device.user_id || null},
+      ${device.device_id},
       ${itemID},
       ${candidate.type},
       ${candidate.merchantKey},
@@ -57,28 +59,28 @@ async function recordEvent(db, deviceID, candidate, status, reason, itemID = nul
 async function sendBestCandidate({ db, device, itemID, candidates, bypassDailyCap = false, bypassDedupe = false }) {
   if (!device.enabled) {
     if (candidates[0]) {
-      await recordEvent(db, device.device_id, candidates[0], "suppressed", "notifications_disabled", itemID);
+      await recordEvent(db, device, candidates[0], "suppressed", "notifications_disabled", itemID);
     }
     return { sent: false, reason: "notifications_disabled", candidates };
   }
 
   if (!bypassDailyCap && await hasSentToday(db, device.device_id)) {
     if (candidates[0]) {
-      await recordEvent(db, device.device_id, candidates[0], "suppressed", "daily_cap", itemID);
+      await recordEvent(db, device, candidates[0], "suppressed", "daily_cap", itemID);
     }
     return { sent: false, reason: "daily_cap", candidates };
   }
 
   for (const candidate of candidates) {
     if (!bypassDedupe && await wasRecentlySent(db, device.device_id, candidate)) {
-      await recordEvent(db, device.device_id, candidate, "suppressed", "recent_duplicate", itemID);
+      await recordEvent(db, device, candidate, "suppressed", "recent_duplicate", itemID);
       continue;
     }
 
     const result = await sendPush(device, candidate);
     await recordEvent(
       db,
-      device.device_id,
+      device,
       candidate,
       result.sent || result.dryRun ? "sent" : "failed",
       result.reason || null,
@@ -138,7 +140,7 @@ async function generateAndSendForDevice({ db, device, itemID = null, newTransact
       title: null,
       body: null
     };
-    await recordEvent(db, device.device_id, placeholder, "suppressed", "no_candidate", itemID);
+    await recordEvent(db, device, placeholder, "suppressed", "no_candidate", itemID);
     return { sent: false, reason: "no_candidate", candidates: [] };
   }
 

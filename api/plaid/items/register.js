@@ -2,6 +2,7 @@ const { encrypt } = require("../../_lib/crypto");
 const { ensureSchema, sql } = require("../../_lib/db");
 const { methodNotAllowed, readJson, sendJson } = require("../../_lib/http");
 const { updateItemWebhook } = require("../../_lib/plaid");
+const { requireSupabaseUser } = require("../../_lib/supabaseAuth");
 
 function validHTTPSURL(value) {
   const trimmed = String(value || "").trim();
@@ -37,6 +38,7 @@ module.exports = async function handler(req, res) {
   }
 
   try {
+    const user = await requireSupabaseUser(req);
     const body = await readJson(req);
     const deviceID = String(body.device_id || "").trim();
     const itemID = String(body.item_id || "").trim();
@@ -49,10 +51,22 @@ module.exports = async function handler(req, res) {
 
     await ensureSchema();
     const db = sql();
+    const devices = await db`
+      select device_id
+      from devices
+      where device_id = ${deviceID}
+        and user_id = ${user.id}
+      limit 1
+    `;
+    if (devices.length === 0) {
+      return sendJson(res, 403, { ok: false, error: "device_not_registered_for_user" });
+    }
+
     const encryptedAccessToken = encrypt(accessToken);
     await db`
       insert into plaid_items (
         item_id,
+        user_id,
         device_id,
         access_token_encrypted,
         environment,
@@ -63,6 +77,7 @@ module.exports = async function handler(req, res) {
       )
       values (
         ${itemID},
+        ${user.id},
         ${deviceID},
         ${encryptedAccessToken},
         ${environment},
@@ -73,6 +88,7 @@ module.exports = async function handler(req, res) {
       )
       on conflict (item_id)
       do update set
+        user_id = excluded.user_id,
         device_id = excluded.device_id,
         access_token_encrypted = excluded.access_token_encrypted,
         environment = excluded.environment,
@@ -84,8 +100,8 @@ module.exports = async function handler(req, res) {
 
     const webhookURL = webhookURLForRequest(req);
     const webhook = await updateItemWebhook({ accessToken, environment, webhookURL });
-    return sendJson(res, 200, { ok: true, webhook });
+    return sendJson(res, 200, { ok: true, user_id: user.id, webhook });
   } catch (error) {
-    return sendJson(res, 500, { ok: false, error: error.message, plaid: error.payload });
+    return sendJson(res, error.statusCode || 500, { ok: false, error: error.message, plaid: error.payload });
   }
 };

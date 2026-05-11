@@ -409,6 +409,9 @@ final class FinanceStore {
             authStatusMessage = "Signed in as \(session.displayName)."
             recordDiagnostic("Supabase Apple sign-in succeeded. userID=\(session.userID), emailPresent=\(session.email != nil).")
             await verifyCurrentAuthSessionWithBackend()
+            if viralNotificationPreferences.isEnabled {
+                await registerNotificationDeviceIfPossible()
+            }
         } catch {
             authErrorMessage = error.localizedDescription
             authStatusMessage = nil
@@ -576,6 +579,11 @@ final class FinanceStore {
     func registerPlaidItemsWithNotificationBackend() async {
         recordDiagnostic("Register Plaid tapped/entered. enabled=\(viralNotificationPreferences.isEnabled), tokenPresent=\(apnsDeviceToken != nil), plaidConnections=\(data.connections.count).")
         await refreshNotificationPermissionStatus()
+        guard let authSession else {
+            notificationErrorMessage = "Sign in with Apple first."
+            recordDiagnostic("Register Plaid stopped: Supabase auth session missing.")
+            return
+        }
         guard viralNotificationPreferences.isEnabled else {
             notificationErrorMessage = "Turn on Viral notifications first."
             recordDiagnostic("Register Plaid stopped: viral notifications are off.")
@@ -594,7 +602,7 @@ final class FinanceStore {
         notificationErrorMessage = nil
         defer { isNotificationActionRunning = false }
 
-        let client = NotificationBackendClient(preferences: viralNotificationPreferences)
+        let client = NotificationBackendClient(preferences: viralNotificationPreferences, authSession: authSession)
         do {
             recordDiagnostic("Registering APNs device with backend. deviceID=\(notificationDeviceID), tokenLength=\(apnsDeviceToken.count).")
             try await client.registerDevice(deviceID: notificationDeviceID, apnsToken: apnsDeviceToken)
@@ -624,6 +632,10 @@ final class FinanceStore {
 
     func registerNotificationDeviceIfPossible() async {
         recordDiagnostic("registerNotificationDeviceIfPossible() entered. enabled=\(viralNotificationPreferences.isEnabled), tokenPresent=\(apnsDeviceToken != nil).")
+        guard let authSession else {
+            recordDiagnostic("registerNotificationDeviceIfPossible() skipped: Supabase auth session missing.")
+            return
+        }
         guard let apnsDeviceToken else {
             recordDiagnostic("registerNotificationDeviceIfPossible() skipped: APNs token missing.")
             return
@@ -632,7 +644,7 @@ final class FinanceStore {
         do {
             notificationStatusMessage = "Registering this iPhone with Clarity backend..."
             notificationErrorMessage = nil
-            let client = NotificationBackendClient(preferences: viralNotificationPreferences)
+            let client = NotificationBackendClient(preferences: viralNotificationPreferences, authSession: authSession)
             recordDiagnostic("Registering device with notification backend. deviceID=\(notificationDeviceID), tokenLength=\(apnsDeviceToken.count).")
             try await client.registerDevice(deviceID: notificationDeviceID, apnsToken: apnsDeviceToken)
             notificationStatusMessage = "This iPhone is registered for viral notifications."
@@ -648,6 +660,12 @@ final class FinanceStore {
     func sendTestViralNotification() async {
         recordDiagnostic("Test notification tapped/entered. enabled=\(viralNotificationPreferences.isEnabled), tokenPresent=\(apnsDeviceToken != nil).")
         await refreshNotificationPermissionStatus()
+        guard let authSession else {
+            lastErrorMessage = "Sign in with Apple first."
+            notificationErrorMessage = "Sign in with Apple first."
+            recordDiagnostic("Test notification stopped: Supabase auth session missing.")
+            return
+        }
         guard viralNotificationPreferences.isEnabled else {
             lastErrorMessage = "Turn on Viral notifications first."
             notificationErrorMessage = "Turn on Viral notifications first."
@@ -669,7 +687,7 @@ final class FinanceStore {
                 return
             }
             notificationStatusMessage = "Sending test notification..."
-            let client = NotificationBackendClient(preferences: viralNotificationPreferences)
+            let client = NotificationBackendClient(preferences: viralNotificationPreferences, authSession: authSession)
             recordDiagnostic("Sending test notification through backend. deviceID=\(notificationDeviceID).")
             try await client.sendTestNotification(deviceID: notificationDeviceID)
             statusMessage = "Test notification requested."

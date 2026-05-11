@@ -138,6 +138,7 @@ struct NotificationBackendClient {
     }
 
     var preferences: ViralNotificationPreferences
+    var authSession: SupabaseAuthSession?
     var session: URLSession = .shared
     private let backendBaseURL = "https://clarityfinance-gilt.vercel.app"
 
@@ -186,6 +187,9 @@ struct NotificationBackendClient {
         var request = URLRequest(url: endpointURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let accessToken = authSession?.accessToken {
+            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        }
         request.httpBody = try JSONEncoder.notificationBackend.encode(body)
 
         print("[Clarity Push] Backend POST \(endpointURL.absoluteString).")

@@ -1,6 +1,7 @@
 const { ensureSchema, sql } = require("../_lib/db");
 const { methodNotAllowed, readJson, sendJson } = require("../_lib/http");
 const { sendBestCandidate } = require("../_lib/notificationDelivery");
+const { requireSupabaseUser } = require("../_lib/supabaseAuth");
 
 module.exports = async function handler(req, res) {
   if (req.method !== "POST") {
@@ -8,6 +9,7 @@ module.exports = async function handler(req, res) {
   }
 
   try {
+    const user = await requireSupabaseUser(req);
     const body = await readJson(req);
     const deviceID = String(body.device_id || "").trim();
     if (!deviceID) {
@@ -16,7 +18,13 @@ module.exports = async function handler(req, res) {
 
     await ensureSchema();
     const db = sql();
-    const rows = await db`select * from devices where device_id = ${deviceID} limit 1`;
+    const rows = await db`
+      select *
+      from devices
+      where device_id = ${deviceID}
+        and user_id = ${user.id}
+      limit 1
+    `;
     if (rows.length === 0) {
       return sendJson(res, 404, { ok: false, error: "device_not_registered" });
     }
@@ -36,8 +44,8 @@ module.exports = async function handler(req, res) {
       bypassDailyCap: true,
       bypassDedupe: true
     });
-    return sendJson(res, 200, { ok: true, delivery });
+    return sendJson(res, 200, { ok: true, user_id: user.id, delivery });
   } catch (error) {
-    return sendJson(res, 500, { ok: false, error: error.message });
+    return sendJson(res, error.statusCode || 500, { ok: false, error: error.message });
   }
 };
