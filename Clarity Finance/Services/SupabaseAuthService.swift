@@ -33,7 +33,8 @@ struct SupabaseAuthSession: Codable, Equatable {
     var email: String?
 
     var displayName: String {
-        email?.isEmpty == false ? email! : userID
+        guard let email, !email.isEmpty else { return userID }
+        return email
     }
 
     var isExpiredSoon: Bool {
@@ -135,16 +136,16 @@ struct SupabaseAuthService {
     }
 
     static func randomNonceString(length: Int = 32) -> String {
-        precondition(length > 0)
+        let targetLength = max(1, length)
         let charset = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
         var result = ""
-        var remainingLength = length
+        var remainingLength = targetLength
 
         while remainingLength > 0 {
             var randoms = [UInt8](repeating: 0, count: 16)
             let status = SecRandomCopyBytes(kSecRandomDefault, randoms.count, &randoms)
             if status != errSecSuccess {
-                fatalError("Unable to generate secure nonce. SecRandomCopyBytes failed with status \(status).")
+                return UUID().uuidString.replacingOccurrences(of: "-", with: "")
             }
 
             randoms.forEach { random in

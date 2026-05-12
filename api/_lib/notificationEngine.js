@@ -16,7 +16,23 @@ function cleanMerchantName(name) {
     .replace(/\b(des|indn|co id|ach trans id|mobile pmt id):.*$/i, "")
     .replace(/\b\d{4,}\b/g, "")
     .trim();
-  return cleaned || "Unknown";
+  return titleCaseMerchant(cleaned || "Unknown");
+}
+
+function titleCaseMerchant(name) {
+  return String(name || "Unknown")
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => {
+      if (/^[A-Z]{2,}$/.test(part) && part.length <= 5) {
+        return part;
+      }
+      if (/^[A-Z]{2,}$/.test(part)) {
+        return part.charAt(0) + part.slice(1).toLowerCase();
+      }
+      return part.charAt(0).toUpperCase() + part.slice(1);
+    })
+    .join(" ");
 }
 
 function startOfDay(date) {
@@ -73,6 +89,10 @@ function isExpense(transaction) {
     return false;
   }
 
+  if (/(^|\b)(irs|internal revenue|treasury|franchise tax|estimated tax|tax payment|state tax|ftb)(\b|$)/.test(name)) {
+    return false;
+  }
+
   return true;
 }
 
@@ -90,23 +110,30 @@ function isFreshForNotification(transaction, now) {
 function roastForMerchant(name, tone) {
   const key = merchantKey(name);
   const brutal = tone === "brutal";
+  const clean = tone === "clean";
 
   if (/starbucks|dutch bros|coffee/.test(key)) {
+    if (clean) return "Coffee is becoming a weekly pattern.";
     return brutal ? "That coffee budget is acting employed." : "At this point it is basically a subscription.";
   }
   if (/target/.test(key)) {
+    if (clean) return "This merchant is driving the week.";
     return brutal ? "You went in for one thing. Sure." : "Target did what Target does.";
   }
   if (/doordash|uber eats|grubhub/.test(key)) {
+    if (clean) return "Delivery is adding up this week.";
     return brutal ? "The stove is still available." : "Convenience had a week.";
   }
   if (/amazon/.test(key)) {
+    if (clean) return "Online shopping is adding up.";
     return brutal ? "The packages are winning." : "A familiar plot twist.";
   }
   if (/apple/.test(key)) {
+    if (clean) return "Apple charges are stacking up.";
     return brutal ? "Apple found the card again." : "Apple had a little moment.";
   }
 
+  if (clean) return "This is worth reviewing.";
   return brutal ? "That is not nothing." : "Worth noticing.";
 }
 

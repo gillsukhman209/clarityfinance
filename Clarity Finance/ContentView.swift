@@ -30,9 +30,9 @@ struct ContentView: View {
                 .tabItem { Label("Subs", systemImage: "calendar.badge.clock") }
                 .tag(ClarityTab.subscriptions)
 
-            TrendsTab(store: store)
-                .tabItem { Label("Trends", systemImage: "chart.line.uptrend.xyaxis") }
-                .tag(ClarityTab.trends)
+            CoachView(store: store)
+                .tabItem { Label("Coach", systemImage: "sparkles") }
+                .tag(ClarityTab.coach)
 
             SettingsTab(
                 store: store,
@@ -70,7 +70,7 @@ private enum ClarityTab {
     case today
     case activity
     case subscriptions
-    case trends
+    case coach
     case settings
 }
 
@@ -929,7 +929,7 @@ private struct HeaderView<Trailing: View>: View {
     }
 }
 
-private struct SpendingStatCard: View {
+struct SpendingStatCard: View {
     var title: String
     var amount: Double
 
@@ -985,7 +985,7 @@ private struct InsightRow: View {
     }
 }
 
-private struct TrendBadge: View {
+struct TrendBadge: View {
     var title: String
     var caption: String
     var isIncrease: Bool
@@ -1015,7 +1015,7 @@ private struct TrendBadge: View {
     }
 }
 
-private struct TrendInsightRow: View {
+struct TrendInsightRow: View {
     var symbolName: String
     var title: String
     var value: String
@@ -1082,7 +1082,7 @@ private struct SimpleTransactionRow: View {
     }
 }
 
-private struct SpendingTrends {
+struct SpendingTrends {
     struct Comparison {
         var current: Double
         var previous: Double

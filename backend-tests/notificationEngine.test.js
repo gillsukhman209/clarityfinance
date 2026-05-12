@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 const test = require("node:test");
 const {
+  cleanMerchantName,
   generateNotificationCandidates,
   isExpense
 } = require("../api/_lib/notificationEngine");
@@ -90,6 +91,31 @@ test("bank payment descriptors are ignored", () => {
     originalName: "CAPITAL ONE DES:MOBILE PMT ID:CA006A476182E22 INDN:Ranjit Singh CO ID:XXXXX44380 WEB",
     amount: 14.96,
     date: "2026-05-10"
+  });
+  const candidates = generateNotificationCandidates({
+    transactions: [transaction],
+    newTransactions: [transaction],
+    now
+  });
+
+  assert.equal(candidates.length, 0);
+});
+
+test("bank descriptor merchant names are shortened for notification copy", () => {
+  assert.equal(
+    cleanMerchantName("DOORDASH DES:ACH TRANS ID:XXXXXXXXXX44001 INDN:BANK OF AMERICA, N.A. CO ID:XXXXX2202 WEB"),
+    "Doordash"
+  );
+});
+
+test("tax payments are not used for viral notifications", () => {
+  const transaction = tx({
+    transactionId: "irs",
+    merchantName: "IRS TAX PAYMENT",
+    originalName: "IRS TAX PAYMENT",
+    amount: 1477,
+    date: "2026-05-10",
+    category: "other"
   });
   const candidates = generateNotificationCandidates({
     transactions: [transaction],

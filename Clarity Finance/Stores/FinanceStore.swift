@@ -55,6 +55,7 @@ final class FinanceStore {
 
         removeLegacySampleDataIfNeeded()
         normalizeStoredTransactionMerchantNames()
+        normalizeStoredBudgets()
         sortTransactionsNewestFirst()
         clearDerivedDataForFreshCore()
         if hasFinancialData {
@@ -1153,6 +1154,27 @@ final class FinanceStore {
         save()
     }
 
+    func setBudgetLimit(for category: TransactionCategory, limit: Double) {
+        let cleanedLimit = max(0, (limit / 5).rounded() * 5)
+        let currentSpent = filteredTransactions
+            .filter { !$0.isIncome && $0.category == category }
+            .reduce(0) { $0 + abs($1.amount) }
+
+        data.budgets.removeAll { $0.category == category }
+        data.budgets.append(
+            BudgetCategory(
+                id: category.rawValue,
+                category: category,
+                limit: cleanedLimit,
+                spent: currentSpent
+            )
+        )
+
+        data.budgets.sort { $0.category.title < $1.category.title }
+        statusMessage = "\(category.title) budget set to \(MoneyFormat.currency(cleanedLimit))."
+        save()
+    }
+
     private func upsert(accounts: [FinancialAccount]) {
         for account in accounts {
             guard !data.removedAccountIDs.contains(account.id) else {
@@ -1295,6 +1317,20 @@ final class FinanceStore {
         }
     }
 
+    private func normalizeStoredBudgets() {
+        guard !data.budgets.isEmpty else { return }
+
+        var latestByCategory: [TransactionCategory: BudgetCategory] = [:]
+        for budget in data.budgets {
+            latestByCategory[budget.category] = budget
+        }
+
+        guard latestByCategory.count != data.budgets.count else { return }
+        let removedCount = data.budgets.count - latestByCategory.count
+        data.budgets = latestByCategory.values.sorted { $0.category.title < $1.category.title }
+        recordDiagnostic("Removed \(removedCount) duplicate budget row(s).")
+    }
+
     private func sortTransactionsNewestFirst() {
         data.transactions.sort { lhs, rhs in
             if lhs.date != rhs.date {
@@ -1422,8 +1458,9 @@ final class FinanceStore {
             data.connections = mergeConnections(local: data.connections, cloud: snapshot.connections)
             upsert(accounts: snapshot.accounts)
             upsert(transactions: snapshot.transactions)
-            data.accounts.removeAll { data.removedAccountIDs.contains($0.id) }
-            data.transactions.removeAll { data.removedAccountIDs.contains($0.accountID) }
+            let removedAccountIDs = data.removedAccountIDs
+            data.accounts.removeAll { removedAccountIDs.contains($0.id) }
+            data.transactions.removeAll { removedAccountIDs.contains($0.accountID) }
             rebuildDerivedData()
             save()
             statusMessage = "Restored \(snapshot.accounts.count) account(s) and \(snapshot.transactions.count) transaction(s)."
@@ -1983,7 +2020,7 @@ final class FinanceStore {
             return []
         }
 
-        let existingLimits = Dictionary(uniqueKeysWithValues: data.budgets.map { ($0.category, $0.limit) })
+        let existingLimits = storedBudgetLimits()
         let limits: [TransactionCategory: Double] = [
             .food: existingLimits[.food] ?? 650,
             .shopping: existingLimits[.shopping] ?? 500,
@@ -2000,6 +2037,14 @@ final class FinanceStore {
             return BudgetCategory(id: category.rawValue, category: category, limit: limit, spent: spent)
         }
         .sorted { $0.category.title < $1.category.title }
+    }
+
+    private func storedBudgetLimits() -> [TransactionCategory: Double] {
+        var limits: [TransactionCategory: Double] = [:]
+        for budget in data.budgets {
+            limits[budget.category] = budget.limit
+        }
+        return limits
     }
 
     private func replaceRecurringCharges(with aiSubscriptions: [SubscriptionItem]) {
