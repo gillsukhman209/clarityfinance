@@ -121,6 +121,7 @@ struct AccountsContent: View {
                 .padding(18)
                 .clarityCard(radius: 20)
 
+                #if DEBUG
                 VStack(alignment: .leading, spacing: 14) {
                     SectionHeader(title: "Test with Sandbox")
 
@@ -172,6 +173,7 @@ struct AccountsContent: View {
                 }
                 .padding(18)
                 .clarityCard(radius: 20)
+                #endif
 
                 VStack(alignment: .leading, spacing: 14) {
                     SectionHeader(title: "Manual statements")
@@ -200,6 +202,7 @@ struct AccountsContent: View {
                     StatusBanner(message: lastErrorMessage, isError: true)
                 }
 
+                #if DEBUG
                 PlaidDiagnosticsCard(
                     logText: store.diagnosticsText,
                     copy: {
@@ -210,6 +213,7 @@ struct AccountsContent: View {
                         store.clearDiagnostics()
                     }
                 )
+                #endif
             }
         }
         .fileImporter(

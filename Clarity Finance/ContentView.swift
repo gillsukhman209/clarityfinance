@@ -644,6 +644,7 @@ private struct SettingsTab: View {
                 .disabled(store.isSyncing)
             }
 
+            #if DEBUG
             HStack(spacing: 10) {
                 Button {
                     Task { await store.connectSandboxInstitution() }
@@ -662,6 +663,15 @@ private struct SettingsTab: View {
                 }
                 .buttonStyle(SecondaryClarityButtonStyle())
             }
+            #else
+            Button {
+                isImportingStatement = true
+            } label: {
+                Label("Apple Card PDFs", systemImage: "doc.badge.plus")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(SecondaryClarityButtonStyle())
+            #endif
         }
         .padding(18)
         .clarityCard(radius: 20)
@@ -706,6 +716,7 @@ private struct SettingsTab: View {
             }
             .pickerStyle(.segmented)
 
+            #if DEBUG
             HStack(spacing: 10) {
                 Button {
                     Task { await store.registerPlaidItemsWithNotificationBackend() }
@@ -730,6 +741,7 @@ private struct SettingsTab: View {
                 .buttonStyle(SecondaryClarityButtonStyle())
                 .disabled(!store.viralNotificationPreferences.isEnabled || store.isNotificationActionRunning)
             }
+            #endif
 
             Text(store.apnsDeviceToken == nil ? "APNs token: waiting until notifications are allowed." : "APNs token: ready.")
                 .font(.caption.weight(.semibold))
@@ -838,6 +850,12 @@ private struct SettingsTab: View {
             StatusBanner(message: lastErrorMessage, isError: true)
         }
 
+        #if DEBUG
+        diagnosticsDisclosure
+        #endif
+    }
+
+    private var diagnosticsDisclosure: some View {
         DisclosureGroup("Diagnostics", isExpanded: $showsDiagnostics) {
             PlaidDiagnosticsCard(
                 logText: store.diagnosticsText,

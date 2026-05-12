@@ -14,7 +14,6 @@ final class FinanceStore {
     var selectedAccountIDs: Set<String> = []
     var recurringDiagnostics: [String] = []
     var isAnalyzingSpending = false
-    var openAIAPIKey: String
     var viralNotificationPreferences: ViralNotificationPreferences {
         didSet {
             saveViralNotificationPreferences()
@@ -50,12 +49,6 @@ final class FinanceStore {
             productionSecret: (try? KeychainStore.read(account: "plaid-production-secret")) ?? PlaidCredentials.bundledSandbox.productionSecret,
             linkCustomizationName: (try? KeychainStore.read(account: "plaid-link-customization-name")) ?? PlaidCredentials.bundledSandbox.linkCustomizationName
         )
-        let savedOpenAIAPIKey = (try? KeychainStore.read(account: "openai-api-key")) ?? ""
-        let bundledOpenAIAPIKey = Self.bundledOpenAIAPIKey()
-        openAIAPIKey = savedOpenAIAPIKey.isEmpty ? bundledOpenAIAPIKey ?? "" : savedOpenAIAPIKey
-        if savedOpenAIAPIKey.isEmpty, let bundledOpenAIAPIKey {
-            try? KeychainStore.save(bundledOpenAIAPIKey, account: "openai-api-key")
-        }
         viralNotificationPreferences = Self.loadViralNotificationPreferences()
         notificationDeviceID = Self.loadNotificationDeviceID()
         authSession = Self.loadSavedAuthSession()
@@ -712,8 +705,8 @@ final class FinanceStore {
         }
     }
 
-    func saveCredentials(clientID: String, sandboxSecret: String, productionSecret: String, linkCustomizationName: String, openAIAPIKey: String) {
-        recordDiagnostic("Saving credentials. clientID set=\(!clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), sandbox secret set=\(!sandboxSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), production secret set=\(!productionSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), link customization set=\(!linkCustomizationName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), OpenAI key set=\(!openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).")
+    func saveCredentials(clientID: String, sandboxSecret: String, productionSecret: String, linkCustomizationName: String) {
+        recordDiagnostic("Saving credentials. clientID set=\(!clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), sandbox secret set=\(!sandboxSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), production secret set=\(!productionSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), link customization set=\(!linkCustomizationName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).")
 
         credentials = PlaidCredentials(
             clientID: clientID,
@@ -721,14 +714,12 @@ final class FinanceStore {
             productionSecret: productionSecret,
             linkCustomizationName: linkCustomizationName
         )
-        self.openAIAPIKey = openAIAPIKey
 
         do {
             try KeychainStore.save(clientID, account: "plaid-client-id")
             try KeychainStore.save(sandboxSecret, account: "plaid-sandbox-secret")
             try KeychainStore.save(productionSecret, account: "plaid-production-secret")
             try KeychainStore.save(linkCustomizationName, account: "plaid-link-customization-name")
-            try KeychainStore.save(openAIAPIKey, account: "openai-api-key")
             statusMessage = "Credentials saved."
             lastErrorMessage = nil
             recordDiagnostic("Credentials saved to Keychain.")
@@ -1097,7 +1088,11 @@ final class FinanceStore {
         lastErrorMessage = nil
 
         do {
-            let classifications = try await OpenAIClassificationClient(apiKey: openAIAPIKey).classify(merchants: inputs)
+            guard let authSession else {
+                throw OpenAIClassificationError.api("Sign in with Apple before running AI scan.")
+            }
+
+            let classifications = try await OpenAIClassificationClient(authSession: authSession).classify(merchants: inputs)
             for classification in classifications {
                 data.merchantClassifications[classification.merchantKey] = classification
             }
@@ -2057,15 +2052,6 @@ final class FinanceStore {
     private static func makeStoreURL() -> URL {
         let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
         return baseURL.appending(path: "Clarity Finance", directoryHint: .isDirectory).appending(path: "finance-data.json")
-    }
-
-    private static func bundledOpenAIAPIKey() -> String? {
-        #if HAS_LOCAL_SECRETS
-        let trimmed = LocalSecrets.openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-        #else
-        return nil
-        #endif
     }
 
     private func saveAuthSession(_ session: SupabaseAuthSession) {

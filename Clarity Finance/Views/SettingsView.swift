@@ -11,15 +11,15 @@ struct SettingsView: View {
     @State private var sandboxSecret = ""
     @State private var productionSecret = ""
     @State private var linkCustomizationName = ""
-    @State private var openAIAPIKey = ""
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 ScreenTitle(title: "Settings", subtitle: "Account linking, notifications, and cloud restore.")
 
+                #if DEBUG
                 VStack(alignment: .leading, spacing: 14) {
-                    SectionHeader(title: "Plaid credentials")
+                    SectionHeader(title: "Developer credentials")
 
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Client ID")
@@ -69,24 +69,12 @@ struct SettingsView: View {
                             .foregroundStyle(ClarityColor.secondaryText)
                     }
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("OpenAI API key")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(ClarityColor.secondaryText)
-
-                        SecureField("OpenAI API key", text: $openAIAPIKey)
-                            .textFieldStyle(.plain)
-                            .padding(13)
-                            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(ClarityColor.panelElevated))
-                    }
-
                     Button {
                         store.saveCredentials(
                             clientID: clientID,
                             sandboxSecret: sandboxSecret,
                             productionSecret: productionSecret,
-                            linkCustomizationName: linkCustomizationName,
-                            openAIAPIKey: openAIAPIKey
+                            linkCustomizationName: linkCustomizationName
                         )
                     } label: {
                         Label("Save credentials", systemImage: "key.fill")
@@ -100,6 +88,7 @@ struct SettingsView: View {
                 }
                 .padding(18)
                 .clarityCard(radius: 20)
+                #endif
 
                 VStack(alignment: .leading, spacing: 14) {
                     SectionHeader(title: "Accounts")
@@ -170,7 +159,6 @@ struct SettingsView: View {
             sandboxSecret = store.credentials.sandboxSecret
             productionSecret = store.credentials.productionSecret
             linkCustomizationName = store.credentials.linkCustomizationName
-            openAIAPIKey = store.openAIAPIKey
         }
     }
 

@@ -1,32 +1,30 @@
 import Foundation
 
 struct OpenAIClassificationClient {
-    private let apiKey: String
+    private let authSession: SupabaseAuthSession
     private let session: URLSession
-    private let model = "gpt-4.1-mini"
+    private let backendBaseURL = URL(string: "https://clarityfinance-gilt.vercel.app")!
 
     init(
-        apiKey: String = "",
+        authSession: SupabaseAuthSession,
         session: URLSession = OpenAIClassificationClient.makeSession()
     ) {
-        self.apiKey = apiKey
+        self.authSession = authSession
         self.session = session
     }
 
     func classify(merchants: [AIClassificationInput]) async throws -> [AIMerchantClassification] {
-        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw OpenAIClassificationError.missingAPIKey
-        }
-
         guard !merchants.isEmpty else {
             return []
         }
 
-        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
+        var request = URLRequest(url: backendBaseURL.appending(path: "/api/ai/classify"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody(for: merchants))
+        request.setValue("Bearer \(authSession.accessToken)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "merchants": merchants.map(\.promptDictionary)
+        ])
 
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -34,17 +32,11 @@ struct OpenAIClassificationClient {
         }
 
         guard (200..<300).contains(httpResponse.statusCode) else {
-            let apiError = try? JSONDecoder().decode(OpenAIErrorResponse.self, from: data)
-            throw OpenAIClassificationError.api(apiError?.error.message ?? "OpenAI returned HTTP \(httpResponse.statusCode).")
+            let apiError = try? JSONDecoder().decode(BackendAIErrorResponse.self, from: data)
+            throw OpenAIClassificationError.api(apiError?.error ?? "AI backend returned HTTP \(httpResponse.statusCode).")
         }
 
-        let decoded = try JSONDecoder().decode(OpenAIResponse.self, from: data)
-        guard let outputText = decoded.outputText else {
-            throw OpenAIClassificationError.missingOutput
-        }
-
-        let resultData = Data(outputText.utf8)
-        let result = try JSONDecoder().decode(AIClassificationResult.self, from: resultData)
+        let result = try JSONDecoder().decode(AIClassificationResult.self, from: data)
         let now = Date()
 
         return result.merchants.map { item in
@@ -58,84 +50,6 @@ struct OpenAIClassificationClient {
                 updatedAt: now
             )
         }
-    }
-
-    private func requestBody(for merchants: [AIClassificationInput]) -> [String: Any] {
-        let merchantPayload = (try? JSONSerialization.data(
-            withJSONObject: merchants.map(\.promptDictionary),
-            options: [.sortedKeys]
-        ))
-        .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
-
-        let inputContent: [[String: Any]] = [
-            [
-                "type": "input_text",
-                "text": "Classify these merchant spending groups. Return JSON that matches the schema exactly.\n\(merchantPayload)"
-            ]
-        ]
-        let inputMessages: [[String: Any]] = [
-            [
-                "role": "user",
-                "content": inputContent
-            ]
-        ]
-        let body: [String: Any] = [
-            "model": model,
-            "instructions": """
-            You classify personal finance transaction merchants for a Gen Z spending app.
-            Be practical and conservative. Do not call one-off purchases subscriptions just because the merchant is famous.
-            Look at the individual transaction dates and amounts. Merchants like Apple, Google, Amazon, Meta, TikTok, and ad platforms can contain both real subscriptions and one-time purchases. A merchant should only be subscription/bill when the actual charge pattern is recurring, not just because the company sells subscriptions.
-            Tax payments, IRS, treasury, franchise tax, government fees, permit fees, filing fees, and estimated taxes are one-time payments unless the transaction dates show a monthly recurring payment plan.
-            A subscription means an ongoing paid service or membership. A bill means a recurring necessary payment like rent, utilities, insurance, loans, phone, internet, taxes, or credit card payments. Transfers and debt payments should not be counted as spending subscriptions.
-            Return short names and plain English that a normal person instantly understands.
-            """,
-            "input": inputMessages,
-            "text": [
-                "format": [
-                    "type": "json_schema",
-                    "name": "clarity_merchant_classifications",
-                    "strict": true,
-                    "schema": responseSchema
-                ]
-            ]
-        ]
-        return body
-    }
-
-    private var responseSchema: [String: Any] {
-        [
-            "type": "object",
-            "additionalProperties": false,
-            "properties": [
-                "merchants": [
-                    "type": "array",
-                    "items": [
-                        "type": "object",
-                        "additionalProperties": false,
-                        "properties": [
-                            "key": ["type": "string"],
-                            "display_name": ["type": "string"],
-                            "kind": [
-                                "type": "string",
-                                "enum": AITransactionKind.allCases.map(\.rawValue)
-                            ],
-                            "category": [
-                                "type": "string",
-                                "enum": TransactionCategory.allCases.map(\.rawValue)
-                            ],
-                            "confidence": [
-                                "type": "number",
-                                "minimum": 0,
-                                "maximum": 1
-                            ],
-                            "plain_english": ["type": "string"]
-                        ],
-                        "required": ["key", "display_name", "kind", "category", "confidence", "plain_english"]
-                    ]
-                ]
-            ],
-            "required": ["merchants"]
-        ]
     }
 
     private static func makeSession() -> URLSession {
@@ -201,50 +115,21 @@ struct AITransactionSample {
 }
 
 enum OpenAIClassificationError: LocalizedError {
-    case missingAPIKey
     case invalidResponse
-    case missingOutput
     case api(String)
 
     var errorDescription: String? {
         switch self {
-        case .missingAPIKey:
-            "OpenAI API key is missing."
         case .invalidResponse:
-            "OpenAI returned an invalid response."
-        case .missingOutput:
-            "OpenAI did not return classification text."
+            "AI backend returned an invalid response."
         case .api(let message):
             message
         }
     }
 }
 
-private struct OpenAIErrorResponse: Decodable {
-    var error: OpenAIError
-}
-
-private struct OpenAIError: Decodable {
-    var message: String
-}
-
-private struct OpenAIResponse: Decodable {
-    var output: [OpenAIOutputItem]
-
-    var outputText: String? {
-        output
-            .flatMap { $0.content ?? [] }
-            .compactMap(\.text)
-            .first
-    }
-}
-
-private struct OpenAIOutputItem: Decodable {
-    var content: [OpenAIContentItem]?
-}
-
-private struct OpenAIContentItem: Decodable {
-    var text: String?
+private struct BackendAIErrorResponse: Decodable {
+    var error: String?
 }
 
 private struct AIClassificationResult: Decodable {

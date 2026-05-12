@@ -1,6 +1,4 @@
-// Local-only secrets live in Secrets.local.xcconfig.
-// That file is gitignored and should never be committed.
-OPENAI_API_KEY =
-SUPABASE_URL =
-SUPABASE_ANON_KEY =
+// Public mobile client configuration. Server-side secrets live in Vercel only.
+SUPABASE_URL = https:/$()/gnzssgijwtalhgjxfnia.supabase.co
+SUPABASE_ANON_KEY = sb_publishable_4z2T2PrRuB_6VliktMEpRA_ZWg8JUgo
 #include? "Secrets.local.xcconfig"
