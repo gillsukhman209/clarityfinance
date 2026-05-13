@@ -40,6 +40,7 @@ enum ClarityColor {
     static let purpleLight = secondaryText
     static let green = Color.clarityAdaptive(light: platformColor(0.05, 0.46, 0.25), dark: platformColor(0.23, 0.82, 0.48))
     static let red = Color.clarityAdaptive(light: platformColor(0.72, 0.18, 0.16), dark: platformColor(1.00, 0.36, 0.32))
+    static let orange = Color.clarityAdaptive(light: platformColor(0.72, 0.38, 0.08), dark: platformColor(1.00, 0.65, 0.24))
     static let blue = Color.clarityAdaptive(light: platformColor(0.00, 0.00, 0.00, 0.68), dark: platformColor(0.72, 0.78, 0.86))
     static let primaryButtonBackground = primaryText
     static let primaryButtonText = page
