@@ -1,25 +1,54 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+private typealias PlatformColor = UIColor
+#elseif os(macOS)
+import AppKit
+private typealias PlatformColor = NSColor
+#endif
+
+enum ClarityAppearance: String, CaseIterable, Identifiable {
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .light: "Light"
+        case .dark: "Dark"
+        }
+    }
+
+    var colorScheme: ColorScheme {
+        switch self {
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+}
 
 enum ClarityColor {
-    static let page = Color(red: 0.92, green: 0.92, blue: 0.90)
-    static let panel = Color(red: 0.96, green: 0.96, blue: 0.94)
-    static let panelElevated = Color(red: 0.89, green: 0.89, blue: 0.87)
-    static let stroke = Color.black.opacity(0.08)
-    static let primaryText = Color.black.opacity(0.88)
-    static let secondaryText = Color.black.opacity(0.56)
-    static let mutedText = Color.black.opacity(0.34)
-    static let purple = Color.black.opacity(0.88)
-    static let purpleLight = Color.black.opacity(0.72)
-    static let green = Color(red: 0.05, green: 0.46, blue: 0.25)
-    static let red = Color(red: 0.72, green: 0.18, blue: 0.16)
-    static let blue = Color.black.opacity(0.68)
+    static let page = Color.clarityAdaptive(light: platformColor(0.92, 0.92, 0.90), dark: platformColor(0.04, 0.04, 0.04))
+    static let panel = Color.clarityAdaptive(light: platformColor(0.96, 0.96, 0.94), dark: platformColor(0.08, 0.08, 0.08))
+    static let panelElevated = Color.clarityAdaptive(light: platformColor(0.89, 0.89, 0.87), dark: platformColor(0.15, 0.15, 0.14))
+    static let stroke = Color.clarityAdaptive(light: platformColor(0.00, 0.00, 0.00, 0.08), dark: platformColor(1.00, 1.00, 1.00, 0.10))
+    static let primaryText = Color.clarityAdaptive(light: platformColor(0.00, 0.00, 0.00, 0.88), dark: platformColor(1.00, 1.00, 1.00, 0.92))
+    static let secondaryText = Color.clarityAdaptive(light: platformColor(0.00, 0.00, 0.00, 0.56), dark: platformColor(1.00, 1.00, 1.00, 0.62))
+    static let mutedText = Color.clarityAdaptive(light: platformColor(0.00, 0.00, 0.00, 0.34), dark: platformColor(1.00, 1.00, 1.00, 0.38))
+    static let purple = primaryText
+    static let purpleLight = secondaryText
+    static let green = Color.clarityAdaptive(light: platformColor(0.05, 0.46, 0.25), dark: platformColor(0.23, 0.82, 0.48))
+    static let red = Color.clarityAdaptive(light: platformColor(0.72, 0.18, 0.16), dark: platformColor(1.00, 0.36, 0.32))
+    static let blue = Color.clarityAdaptive(light: platformColor(0.00, 0.00, 0.00, 0.68), dark: platformColor(0.72, 0.78, 0.86))
+    static let primaryButtonBackground = primaryText
+    static let primaryButtonText = page
 }
 
 struct ClarityBackground: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background(ClarityColor.page.ignoresSafeArea())
-            .preferredColorScheme(.light)
     }
 }
 
@@ -36,6 +65,25 @@ struct ClarityCard: ViewModifier {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
                     .stroke(ClarityColor.stroke, lineWidth: 1)
             )
+    }
+}
+
+private func platformColor(_ red: Double, _ green: Double, _ blue: Double, _ alpha: Double = 1) -> PlatformColor {
+    PlatformColor(red: CGFloat(red), green: CGFloat(green), blue: CGFloat(blue), alpha: CGFloat(alpha))
+}
+
+private extension Color {
+    static func clarityAdaptive(light: PlatformColor, dark: PlatformColor) -> Color {
+        #if os(iOS)
+        Color(UIColor { traitCollection in
+            traitCollection.userInterfaceStyle == .dark ? dark : light
+        })
+        #elseif os(macOS)
+        Color(NSColor(name: nil) { appearance in
+            let match = appearance.bestMatch(from: [.darkAqua, .aqua])
+            return match == .darkAqua ? dark : light
+        })
+        #endif
     }
 }
 

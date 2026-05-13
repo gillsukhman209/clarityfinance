@@ -372,12 +372,12 @@ struct PrimaryClarityButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.subheadline.weight(.bold))
-            .foregroundStyle(.white)
+            .foregroundStyle(ClarityColor.primaryButtonText)
             .padding(.vertical, 13)
             .padding(.horizontal, 16)
             .background(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.black.opacity(configuration.isPressed ? 0.72 : 1))
+                    .fill(ClarityColor.primaryButtonBackground.opacity(configuration.isPressed ? 0.72 : 1))
             )
     }
 }

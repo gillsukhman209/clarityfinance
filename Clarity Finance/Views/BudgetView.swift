@@ -69,7 +69,7 @@ struct BudgetProgressRow: View {
                         .fill(ClarityColor.panelElevated)
 
                     Capsule()
-                        .fill(budget.progress > 0.9 ? ClarityColor.red : Color.black)
+                        .fill(budget.progress > 0.9 ? ClarityColor.red : ClarityColor.primaryText)
                         .frame(width: geometry.size.width * budget.progress)
                 }
             }

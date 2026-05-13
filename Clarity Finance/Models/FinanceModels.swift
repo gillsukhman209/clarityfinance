@@ -130,8 +130,22 @@ struct FinancialAccount: Identifiable, Codable, Hashable {
     var kind: AccountKind
     var currentBalance: Double
     var availableBalance: Double?
+    var creditLimit: Double?
     var currencyCode: String
     var isManual: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case institutionName
+        case name
+        case mask
+        case kind
+        case currentBalance
+        case availableBalance
+        case creditLimit
+        case currencyCode
+        case isManual
+    }
 
     var displayName: String {
         if let mask, !mask.isEmpty {
@@ -140,6 +154,59 @@ struct FinancialAccount: Identifiable, Codable, Hashable {
             name
         }
     }
+
+    init(
+        id: String,
+        institutionName: String,
+        name: String,
+        mask: String?,
+        kind: AccountKind,
+        currentBalance: Double,
+        availableBalance: Double?,
+        creditLimit: Double? = nil,
+        currencyCode: String,
+        isManual: Bool
+    ) {
+        self.id = id
+        self.institutionName = institutionName
+        self.name = name
+        self.mask = mask
+        self.kind = kind
+        self.currentBalance = currentBalance
+        self.availableBalance = availableBalance
+        self.creditLimit = creditLimit
+        self.currencyCode = currencyCode
+        self.isManual = isManual
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        institutionName = try container.decode(String.self, forKey: .institutionName)
+        name = try container.decode(String.self, forKey: .name)
+        mask = try container.decodeIfPresent(String.self, forKey: .mask)
+        kind = try container.decode(AccountKind.self, forKey: .kind)
+        currentBalance = try container.decode(Double.self, forKey: .currentBalance)
+        availableBalance = try container.decodeIfPresent(Double.self, forKey: .availableBalance)
+        creditLimit = try container.decodeIfPresent(Double.self, forKey: .creditLimit)
+        currencyCode = try container.decode(String.self, forKey: .currencyCode)
+        isManual = try container.decode(Bool.self, forKey: .isManual)
+    }
+}
+
+struct CreditCardLiability: Identifiable, Codable, Hashable {
+    var accountID: String
+    var minimumPaymentAmount: Double?
+    var nextPaymentDueDate: Date?
+    var lastPaymentAmount: Double?
+    var lastPaymentDate: Date?
+    var lastStatementBalance: Double?
+    var lastStatementIssueDate: Date?
+    var isOverdue: Bool?
+    var aprPercentage: Double?
+    var updatedAt: Date?
+
+    var id: String { accountID }
 }
 
 struct FinanceTransaction: Identifiable, Codable, Hashable {
@@ -443,6 +510,7 @@ struct PlaidConnection: Identifiable, Codable, Hashable {
 struct FinanceDataSet: Codable {
     var accounts: [FinancialAccount]
     var transactions: [FinanceTransaction]
+    var creditCardLiabilities: [CreditCardLiability]
     var merchantClassifications: [String: AIMerchantClassification]
     var subscriptions: [SubscriptionItem]
     var budgets: [BudgetCategory]
@@ -455,6 +523,7 @@ struct FinanceDataSet: Codable {
     static let empty = FinanceDataSet(
         accounts: [],
         transactions: [],
+        creditCardLiabilities: [],
         merchantClassifications: [:],
         subscriptions: [],
         budgets: [],
@@ -468,6 +537,7 @@ struct FinanceDataSet: Codable {
     enum CodingKeys: String, CodingKey {
         case accounts
         case transactions
+        case creditCardLiabilities
         case merchantClassifications
         case subscriptions
         case budgets
@@ -481,6 +551,7 @@ struct FinanceDataSet: Codable {
     init(
         accounts: [FinancialAccount],
         transactions: [FinanceTransaction],
+        creditCardLiabilities: [CreditCardLiability] = [],
         merchantClassifications: [String: AIMerchantClassification] = [:],
         subscriptions: [SubscriptionItem],
         budgets: [BudgetCategory],
@@ -492,6 +563,7 @@ struct FinanceDataSet: Codable {
     ) {
         self.accounts = accounts
         self.transactions = transactions
+        self.creditCardLiabilities = creditCardLiabilities
         self.merchantClassifications = merchantClassifications
         self.subscriptions = subscriptions
         self.budgets = budgets
@@ -506,6 +578,7 @@ struct FinanceDataSet: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         accounts = try container.decodeIfPresent([FinancialAccount].self, forKey: .accounts) ?? []
         transactions = try container.decodeIfPresent([FinanceTransaction].self, forKey: .transactions) ?? []
+        creditCardLiabilities = try container.decodeIfPresent([CreditCardLiability].self, forKey: .creditCardLiabilities) ?? []
         merchantClassifications = try container.decodeIfPresent([String: AIMerchantClassification].self, forKey: .merchantClassifications) ?? [:]
         subscriptions = try container.decodeIfPresent([SubscriptionItem].self, forKey: .subscriptions) ?? []
         budgets = try container.decodeIfPresent([BudgetCategory].self, forKey: .budgets) ?? []

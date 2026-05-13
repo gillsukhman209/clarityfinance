@@ -51,7 +51,7 @@ async function createHostedLinkToken({ environment, userID, linkCustomizationNam
     client_id: credentials.clientID,
     secret: credentials.secret,
     client_name: "Clarity Finance",
-    products: ["transactions"],
+    products: ["transactions", "liabilities"],
     country_codes: ["US"],
     language: "en",
     user: {
@@ -99,6 +99,15 @@ async function exchangePublicToken({ environment, publicToken }) {
 async function fetchAccounts({ accessToken, environment }) {
   const credentials = plaidCredentials(environment);
   return postPlaid(environment, "/accounts/get", {
+    client_id: credentials.clientID,
+    secret: credentials.secret,
+    access_token: accessToken
+  });
+}
+
+async function fetchLiabilities({ accessToken, environment }) {
+  const credentials = plaidCredentials(environment);
+  return postPlaid(environment, "/liabilities/get", {
     client_id: credentials.clientID,
     secret: credentials.secret,
     access_token: accessToken
@@ -193,6 +202,7 @@ module.exports = {
   createHostedLinkToken,
   exchangePublicToken,
   fetchAccounts,
+  fetchLiabilities,
   getLinkToken,
   normalizePlaidTransaction,
   publicTokenMetadata,

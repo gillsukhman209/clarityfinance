@@ -11,10 +11,15 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     @Bindable var store: FinanceStore
+    @AppStorage("clarityAppearance") private var appearanceRawValue = ClarityAppearance.light.rawValue
     @State private var selectedTab: ClarityTab = .today
     @State private var plaidWebSession: PlaidWebSession?
     @State private var isImportingStatement = false
     @State private var showsDiagnostics = false
+
+    private var selectedAppearance: ClarityAppearance {
+        ClarityAppearance(rawValue: appearanceRawValue) ?? .light
+    }
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -30,6 +35,10 @@ struct ContentView: View {
                 .tabItem { Label("Subs", systemImage: "calendar.badge.clock") }
                 .tag(ClarityTab.subscriptions)
 
+            CreditCardsTab(store: store)
+                .tabItem { Label("Cards", systemImage: "creditcard.fill") }
+                .tag(ClarityTab.creditCards)
+
             CoachView(store: store)
                 .tabItem { Label("Coach", systemImage: "sparkles") }
                 .tag(ClarityTab.coach)
@@ -38,12 +47,14 @@ struct ContentView: View {
                 store: store,
                 plaidWebSession: $plaidWebSession,
                 isImportingStatement: $isImportingStatement,
-                showsDiagnostics: $showsDiagnostics
+                showsDiagnostics: $showsDiagnostics,
+                appearanceRawValue: $appearanceRawValue
             )
             .tabItem { Label("Settings", systemImage: "gearshape.fill") }
             .tag(ClarityTab.settings)
         }
         .clarityBackground()
+        .preferredColorScheme(selectedAppearance.colorScheme)
         .sheet(item: $plaidWebSession) { session in
             PlaidLinkSheet(store: store, session: session)
         }
@@ -70,24 +81,20 @@ private enum ClarityTab {
     case today
     case activity
     case subscriptions
+    case creditCards
     case coach
     case settings
 }
 
 private struct TodayTab: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     @Bindable var store: FinanceStore
     @State private var selectedTransaction: FinanceTransaction?
 
     var body: some View {
         ScreenScroll {
-            HeaderView(title: "Clarity", subtitle: store.accountFilterCaption) {
-                if !store.data.accounts.isEmpty {
-                    AccountFilterBar(accounts: store.data.accounts, selectedAccountIDs: $store.selectedAccountIDs)
-                }
-            }
-
-            spendingCard
-            quickReadCard
+            todayBalanceView
             latestPreviewCard
         }
         .sheet(item: $selectedTransaction) { transaction in
@@ -104,78 +111,95 @@ private struct TodayTab: View {
         }
     }
 
-    private var spendingCard: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Total spent")
-                    .font(.subheadline.weight(.semibold))
+    private var todayBalanceView: some View {
+        VStack(alignment: .leading, spacing: 28) {
+            HStack(alignment: .center) {
+                Circle()
+                    .fill(ClarityColor.primaryText)
+                    .frame(width: 12, height: 12)
+
+                Spacer()
+
+                if !store.data.accounts.isEmpty {
+                    AccountFilterBar(accounts: store.data.accounts, selectedAccountIDs: $store.selectedAccountIDs)
+                        .fixedSize()
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Balance")
+                    .font(.caption.weight(.bold))
+                    .textCase(.uppercase)
                     .foregroundStyle(ClarityColor.secondaryText)
 
-                Text(MoneyFormat.currency(store.spendingThisMonth))
-                    .font(.system(size: 42, weight: .bold))
+                Text(MoneyFormat.currency(currentBalance))
+                    .font(.system(size: 62, weight: .regular))
                     .foregroundStyle(ClarityColor.primaryText)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-
-                Text("This month")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(ClarityColor.mutedText)
+                    .minimumScaleFactor(0.48)
             }
 
-            HStack(spacing: 10) {
-                SpendingStatCard(title: "Today", amount: store.spendingToday)
-                SpendingStatCard(title: "7 days", amount: store.spendingThisWeek)
-                SpendingStatCard(title: "Month", amount: store.spendingThisMonth)
+            VStack(spacing: 16) {
+                Image(colorScheme == .dark ? "hourglass_dark" : "hourglass")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 232, height: 258)
+                    .accessibilityHidden(true)
+                    .shadow(color: Color.black.opacity(0.08), radius: 24, x: 0, y: 18)
+                    .frame(maxWidth: .infinity)
+
+                Text(balanceLine)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(ClarityColor.primaryText)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+
+                HStack(spacing: 5) {
+                    Capsule()
+                        .fill(ClarityColor.primaryText)
+                        .frame(width: 18, height: 4)
+                    Circle()
+                        .fill(ClarityColor.primaryText.opacity(0.28))
+                        .frame(width: 4, height: 4)
+                    Capsule()
+                        .fill(ClarityColor.primaryText.opacity(0.16))
+                        .frame(width: 18, height: 3)
+                }
             }
 
-            Text(store.data.connections.isEmpty ? "Connect a bank in Settings." : "Pull down to refresh.")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(ClarityColor.secondaryText)
+            VStack(spacing: 0) {
+                TodayBalanceMetricRow(title: "Income", amount: store.incomeThisMonth, tone: .positive)
+                Divider().overlay(ClarityColor.stroke)
+                TodayBalanceMetricRow(title: "Expenses", amount: store.monthlySpend, tone: .negative)
+                Divider().overlay(ClarityColor.stroke)
+                TodayBalanceMetricRow(title: "Saved", amount: savedThisMonth, tone: .neutral)
+            }
         }
-        .padding(18)
-        .clarityCard(radius: 20)
+        .padding(.top, 6)
     }
 
-    private var quickReadCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            SectionHeader(title: "Quick read", systemImage: "sparkles")
+    private var currentBalance: Double {
+        store.assetsTotal - store.liabilitiesTotal
+    }
 
-            VStack(spacing: 10) {
-                if let topMerchant = store.topMerchantThisMonth {
-                    InsightRow(
-                        symbolName: "crown.fill",
-                        title: "Top merchant",
-                        value: "\(topMerchant.merchantName) - \(MoneyFormat.currency(topMerchant.total))",
-                        note: topMerchant.classification?.plainEnglish
-                    )
-                } else {
-                    InsightRow(
-                        symbolName: "tray.fill",
-                        title: "No spending yet",
-                        value: "Connect accounts from Settings.",
-                        note: nil
-                    )
-                }
+    private var savedThisMonth: Double {
+        max(0, store.incomeThisMonth - store.monthlySpend)
+    }
 
-                if let biggest = store.biggestSpendThisMonth {
-                    InsightRow(
-                        symbolName: "bolt.fill",
-                        title: "Biggest swipe",
-                        value: "\(biggest.merchantName) - \(MoneyFormat.currency(abs(biggest.amount)))",
-                        note: store.classification(for: biggest)?.kind.title
-                    )
-                }
-
-                InsightRow(
-                    symbolName: "brain.head.profile",
-                    title: "AI scan",
-                    value: store.aiSummaryText,
-                    note: nil
-                )
-            }
+    private var balanceLine: String {
+        if store.data.accounts.isEmpty && store.data.transactions.isEmpty {
+            return "Connect your accounts to see the full picture."
         }
-        .padding(18)
-        .clarityCard(radius: 20)
+
+        if savedThisMonth > 0 {
+            return "You kept \(MoneyFormat.currency(savedThisMonth)) this month."
+        }
+
+        if store.monthlySpend > 0 {
+            return "You spent \(MoneyFormat.currency(store.monthlySpend)) this month."
+        }
+
+        return "Your money is quiet right now."
     }
 
     private var latestPreviewCard: some View {
@@ -211,6 +235,69 @@ private struct TodayTab: View {
         }
         .padding(18)
         .clarityCard(radius: 20)
+    }
+}
+
+private struct TodayBalanceMetricRow: View {
+    enum Tone {
+        case positive
+        case negative
+        case neutral
+    }
+
+    var title: String
+    var amount: Double
+    var tone: Tone
+
+    var body: some View {
+        HStack(spacing: 18) {
+            Text(title)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(ClarityColor.primaryText)
+
+            Spacer()
+
+            MiniPulseLine(tone: tone)
+                .frame(width: 44, height: 18)
+
+            Text(MoneyFormat.currency(amount))
+                .font(.headline.weight(.bold))
+                .foregroundStyle(ClarityColor.primaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.76)
+                .frame(minWidth: 92, alignment: .trailing)
+        }
+        .padding(.vertical, 17)
+    }
+}
+
+private struct MiniPulseLine: View {
+    var tone: TodayBalanceMetricRow.Tone
+
+    var body: some View {
+        GeometryReader { geometry in
+            Path { path in
+                let width = geometry.size.width
+                let height = geometry.size.height
+                path.move(to: CGPoint(x: 0, y: height * 0.60))
+                path.addLine(to: CGPoint(x: width * 0.25, y: tone == .negative ? height * 0.42 : height * 0.68))
+                path.addLine(to: CGPoint(x: width * 0.48, y: tone == .negative ? height * 0.68 : height * 0.46))
+                path.addLine(to: CGPoint(x: width * 0.72, y: tone == .negative ? height * 0.56 : height * 0.36))
+                path.addLine(to: CGPoint(x: width, y: tone == .negative ? height * 0.76 : height * 0.22))
+            }
+            .stroke(color, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+        }
+    }
+
+    private var color: Color {
+        switch tone {
+        case .positive:
+            return ClarityColor.green
+        case .negative:
+            return ClarityColor.red
+        case .neutral:
+            return ClarityColor.primaryText.opacity(0.62)
+        }
     }
 }
 
@@ -321,6 +408,200 @@ private struct AccountsTab: View {
                 },
                 secondaryButton: .cancel()
             )
+        }
+    }
+}
+
+private struct CreditCardsTab: View {
+    @Bindable var store: FinanceStore
+
+    private var creditAccounts: [FinancialAccount] {
+        store.filteredAccounts.filter { $0.kind == .creditCard }
+    }
+
+    private var totalDebt: Double {
+        creditAccounts.reduce(0) { $0 + $1.currentBalance }
+    }
+
+    private var minimumPaymentTotal: Double {
+        creditAccounts.reduce(0) { total, account in
+            total + (store.creditCardLiability(for: account.id)?.minimumPaymentAmount ?? 0)
+        }
+    }
+
+    private var nextDueDate: Date? {
+        creditAccounts
+            .compactMap { store.creditCardLiability(for: $0.id)?.nextPaymentDueDate }
+            .min()
+    }
+
+    var body: some View {
+        ScreenScroll {
+            HeaderView(title: "Cards", subtitle: "Credit card debt and due dates.") {
+                if !store.data.accounts.isEmpty {
+                    AccountFilterBar(accounts: store.data.accounts, selectedAccountIDs: $store.selectedAccountIDs)
+                }
+            }
+
+            if let message = store.creditCardLiabilityStatusMessage {
+                StatusBanner(message: message, isError: false)
+            }
+
+            if let message = store.creditCardLiabilityErrorMessage {
+                StatusBanner(message: message, isError: true)
+            }
+
+            VStack(alignment: .leading, spacing: 14) {
+                SectionHeader(title: "Credit snapshot", systemImage: "creditcard.fill")
+
+                HStack(spacing: 12) {
+                    MetricCard(
+                        title: "Total balance",
+                        value: MoneyFormat.currency(totalDebt),
+                        caption: "\(creditAccounts.count) card\(creditAccounts.count == 1 ? "" : "s")",
+                        symbolName: "creditcard.fill",
+                        tint: ClarityColor.red
+                    )
+                    MetricCard(
+                        title: "Minimum due",
+                        value: MoneyFormat.currency(minimumPaymentTotal),
+                        caption: nextDueDate.map { "Next due \($0.formatted(.dateTime.month(.abbreviated).day()))" } ?? "Waiting for Plaid",
+                        symbolName: "calendar.badge.exclamationmark",
+                        tint: ClarityColor.purple
+                    )
+                }
+
+                Button {
+                    Task { await store.syncAllConnections() }
+                } label: {
+                    Label("Refresh card details", systemImage: "arrow.clockwise")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryClarityButtonStyle())
+                .disabled(store.isSyncing || store.data.connections.isEmpty)
+            }
+            .padding(18)
+            .clarityCard(radius: 20)
+
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader(title: "Payment details", systemImage: "calendar")
+
+                if creditAccounts.isEmpty {
+                    EmptyStateView(
+                        title: "No credit cards",
+                        message: "Connect a credit card account with Plaid Liabilities enabled.",
+                        symbolName: "creditcard"
+                    )
+                } else {
+                    ForEach(creditAccounts) { account in
+                        CreditCardLiabilityRow(
+                            account: account,
+                            liability: store.creditCardLiability(for: account.id)
+                        )
+
+                        if account.id != creditAccounts.last?.id {
+                            Divider()
+                        }
+                    }
+                }
+            }
+            .padding(18)
+            .clarityCard(radius: 20)
+        }
+        .refreshable {
+            guard !store.data.connections.isEmpty else { return }
+            await store.syncAllConnections()
+        }
+    }
+}
+
+private struct CreditCardLiabilityRow: View {
+    var account: FinancialAccount
+    var liability: CreditCardLiability?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                IconBadge(symbolName: "creditcard.fill", tint: overdueColor)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(account.displayName)
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(ClarityColor.primaryText)
+                        .lineLimit(1)
+
+                    Text(account.institutionName)
+                        .font(.caption)
+                        .foregroundStyle(ClarityColor.secondaryText)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text(MoneyFormat.currency(account.currentBalance))
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(ClarityColor.primaryText)
+                    Text("balance")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(ClarityColor.mutedText)
+                }
+            }
+
+            if let liability {
+                VStack(spacing: 10) {
+                    CreditDetailLine(title: "Minimum payment", value: amountText(liability.minimumPaymentAmount))
+                    CreditDetailLine(title: "Due date", value: dateText(liability.nextPaymentDueDate))
+                    CreditDetailLine(title: "Last statement", value: amountText(liability.lastStatementBalance))
+                    CreditDetailLine(title: "APR", value: percentText(liability.aprPercentage))
+                    CreditDetailLine(title: "Status", value: liability.isOverdue == true ? "Overdue" : "Current")
+                }
+            } else {
+                Text("Plaid has the card balance, but not payment details yet. Pull down to refresh after Liabilities finishes loading.")
+                    .font(.subheadline)
+                    .foregroundStyle(ClarityColor.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 12)
+    }
+
+    private var overdueColor: Color {
+        liability?.isOverdue == true ? ClarityColor.red : ClarityColor.blue
+    }
+
+    private func amountText(_ amount: Double?) -> String {
+        guard let amount else { return "Not returned" }
+        return MoneyFormat.currency(amount)
+    }
+
+    private func dateText(_ date: Date?) -> String {
+        guard let date else { return "Not returned" }
+        return date.formatted(.dateTime.month(.abbreviated).day().year())
+    }
+
+    private func percentText(_ percent: Double?) -> String {
+        guard let percent else { return "Not returned" }
+        return "\(percent.formatted(.number.precision(.fractionLength(2))))%"
+    }
+}
+
+private struct CreditDetailLine: View {
+    var title: String
+    var value: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ClarityColor.secondaryText)
+
+            Spacer(minLength: 16)
+
+            Text(value)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(ClarityColor.primaryText)
+                .multilineTextAlignment(.trailing)
         }
     }
 }
@@ -471,13 +752,24 @@ private struct SettingsTab: View {
     @Binding var plaidWebSession: PlaidWebSession?
     @Binding var isImportingStatement: Bool
     @Binding var showsDiagnostics: Bool
+    @Binding var appearanceRawValue: String
     @State private var accountPendingRemoval: FinancialAccount?
     @State private var appleSignInNonce: String?
+
+    private var selectedAppearance: ClarityAppearance {
+        get {
+            ClarityAppearance(rawValue: appearanceRawValue) ?? .light
+        }
+        nonmutating set {
+            appearanceRawValue = newValue.rawValue
+        }
+    }
 
     var body: some View {
         ScreenScroll {
             HeaderView(title: "Settings", subtitle: "Connect, import, refresh.")
 
+            appearanceCard
             authCard
             addAccountCard
             notificationsCard
@@ -495,6 +787,28 @@ private struct SettingsTab: View {
                 secondaryButton: .cancel()
             )
         }
+    }
+
+    private var appearanceCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(title: "Appearance", systemImage: "circle.lefthalf.filled")
+
+            Picker("Theme", selection: Binding(
+                get: { selectedAppearance },
+                set: { selectedAppearance = $0 }
+            )) {
+                ForEach(ClarityAppearance.allCases) { appearance in
+                    Text(appearance.title).tag(appearance)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Text("Dark mode changes the whole app and uses the dark hourglass on Today.")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ClarityColor.secondaryText)
+        }
+        .padding(18)
+        .clarityCard(radius: 20)
     }
 
     private var authCard: some View {

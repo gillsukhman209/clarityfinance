@@ -5,6 +5,7 @@ const {
   createHostedLinkToken,
   exchangePublicToken,
   fetchAccounts,
+  fetchLiabilities,
   getLinkToken,
   normalizePlaidTransaction,
   publicTokenMetadata,
@@ -137,6 +138,73 @@ async function upsertAccounts(db, userID, itemID, institutionName, accounts) {
   }
 }
 
+function parseAmount(value) {
+  return value == null ? null : Number(value);
+}
+
+function parseDate(value) {
+  return value || null;
+}
+
+function creditAPRPercentage(creditLiability) {
+  const aprs = Array.isArray(creditLiability.aprs) ? creditLiability.aprs : [];
+  const positiveAPRs = aprs
+    .map((apr) => Number(apr.apr_percentage || 0))
+    .filter((apr) => apr > 0);
+  return positiveAPRs.length ? Math.max(...positiveAPRs) : null;
+}
+
+async function upsertCreditCardLiabilities(db, userID, itemID, liabilities) {
+  for (const liability of liabilities) {
+    await db`
+      insert into credit_card_liabilities (
+        account_id,
+        user_id,
+        item_id,
+        minimum_payment_amount,
+        next_payment_due_date,
+        last_payment_amount,
+        last_payment_date,
+        last_statement_balance,
+        last_statement_issue_date,
+        is_overdue,
+        apr_percentage,
+        raw,
+        updated_at
+      )
+      values (
+        ${liability.account_id},
+        ${userID},
+        ${itemID},
+        ${parseAmount(liability.minimum_payment_amount)},
+        ${parseDate(liability.next_payment_due_date)},
+        ${parseAmount(liability.last_payment_amount)},
+        ${parseDate(liability.last_payment_date)},
+        ${parseAmount(liability.last_statement_balance)},
+        ${parseDate(liability.last_statement_issue_date)},
+        ${liability.is_overdue == null ? null : Boolean(liability.is_overdue)},
+        ${creditAPRPercentage(liability)},
+        ${liability},
+        now()
+      )
+      on conflict (account_id)
+      do update set
+        user_id = excluded.user_id,
+        item_id = excluded.item_id,
+        minimum_payment_amount = excluded.minimum_payment_amount,
+        next_payment_due_date = excluded.next_payment_due_date,
+        last_payment_amount = excluded.last_payment_amount,
+        last_payment_date = excluded.last_payment_date,
+        last_statement_balance = excluded.last_statement_balance,
+        last_statement_issue_date = excluded.last_statement_issue_date,
+        is_overdue = excluded.is_overdue,
+        apr_percentage = excluded.apr_percentage,
+        raw = excluded.raw,
+        updated_at = now()
+    `;
+  }
+}
+
 async function loadUserItem(db, userID, itemID) {
   const rows = await db`
     select item_id, access_token_encrypted, environment, cursor, institution_id, institution_name, created_at, updated_at
@@ -182,6 +250,21 @@ function snapshotAccount(row) {
     availableBalance: row.available_balance == null ? null : Number(row.available_balance),
     currencyCode: row.currency_code || "USD",
     isManual: false
+  };
+}
+
+function snapshotCreditCardLiability(row) {
+  return {
+    account_id: row.account_id,
+    minimum_payment_amount: row.minimum_payment_amount == null ? null : Number(row.minimum_payment_amount),
+    next_payment_due_date: row.next_payment_due_date,
+    last_payment_amount: row.last_payment_amount == null ? null : Number(row.last_payment_amount),
+    last_payment_date: row.last_payment_date,
+    last_statement_balance: row.last_statement_balance == null ? null : Number(row.last_statement_balance),
+    last_statement_issue_date: row.last_statement_issue_date,
+    is_overdue: row.is_overdue,
+    apr_percentage: row.apr_percentage == null ? null : Number(row.apr_percentage),
+    updated_at: row.updated_at
   };
 }
 
@@ -302,6 +385,28 @@ async function handleAccounts(res, user, body) {
   return sendJson(res, 200, payload);
 }
 
+async function handleLiabilities(res, user, body) {
+  const itemID = String(body.item_id || "").trim();
+  if (!itemID) {
+    return sendJson(res, 400, { ok: false, error: "item_id_required" });
+  }
+
+  await ensureSchema();
+  const db = sql();
+  const item = await loadUserItem(db, user.id, itemID);
+  if (!item) {
+    return sendJson(res, 404, { ok: false, error: "plaid_item_not_found_for_user" });
+  }
+
+  const payload = await fetchLiabilities({
+    accessToken: decrypt(item.access_token_encrypted),
+    environment: item.environment
+  });
+  await upsertAccounts(db, user.id, itemID, item.institution_name, payload.accounts || []);
+  await upsertCreditCardLiabilities(db, user.id, itemID, payload.liabilities?.credit || []);
+  return sendJson(res, 200, payload);
+}
+
 async function handleTransactionsSync(res, user, body) {
   const itemID = String(body.item_id || "").trim();
   if (!itemID) {
@@ -384,6 +489,16 @@ async function handleSnapshot(res, user) {
     } catch (error) {
       console.error("snapshot account refresh failed", item.item_id, error.message);
     }
+
+    try {
+      const payload = await fetchLiabilities({
+        accessToken: decrypt(item.access_token_encrypted),
+        environment: item.environment
+      });
+      await upsertCreditCardLiabilities(db, user.id, item.item_id, payload.liabilities?.credit || []);
+    } catch (error) {
+      console.error("snapshot liabilities refresh failed", item.item_id, error.message);
+    }
   }
 
   const accounts = await db`
@@ -399,6 +514,15 @@ async function handleSnapshot(res, user) {
     where i.user_id = ${user.id}
     order by t.date desc, t.updated_at desc
   `;
+  const creditCardLiabilities = await db`
+    select account_id, minimum_payment_amount, next_payment_due_date::text as next_payment_due_date,
+      last_payment_amount, last_payment_date::text as last_payment_date,
+      last_statement_balance, last_statement_issue_date::text as last_statement_issue_date,
+      is_overdue, apr_percentage, updated_at
+    from credit_card_liabilities
+    where user_id = ${user.id}
+    order by next_payment_due_date asc nulls last, updated_at desc
+  `;
 
   return sendJson(res, 200, {
     ok: true,
@@ -406,6 +530,7 @@ async function handleSnapshot(res, user) {
     connections: items.map(snapshotConnection),
     accounts: accounts.filter((account) => !removedAccounts.has(account.account_id)).map(snapshotAccount),
     transactions: transactions.filter((transaction) => !removedAccounts.has(transaction.account_id)).map(snapshotTransaction),
+    credit_card_liabilities: creditCardLiabilities.filter((liability) => !removedAccounts.has(liability.account_id)).map(snapshotCreditCardLiability),
     removed_account_ids: Array.from(removedAccounts)
   });
 }
@@ -437,6 +562,7 @@ async function handleRemoveAccount(res, user, body) {
     do update set item_id = excluded.item_id, removed_at = now()
   `;
   await db`delete from transactions where account_id = ${accountID}`;
+  await db`delete from credit_card_liabilities where account_id = ${accountID}`;
   await db`delete from accounts where account_id = ${accountID}`;
 
   return sendJson(res, 200, { ok: true, user_id: user.id, account_id: accountID });
@@ -463,6 +589,9 @@ module.exports = async function handler(req, res) {
     }
     if (route === "accounts/get") {
       return handleAccounts(res, user, body);
+    }
+    if (route === "liabilities/get") {
+      return handleLiabilities(res, user, body);
     }
     if (route === "transactions/sync") {
       return handleTransactionsSync(res, user, body);

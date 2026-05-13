@@ -101,12 +101,12 @@ struct CategoryChip: View {
         Button(action: action) {
             Text(title)
                 .font(.caption.weight(.bold))
-                .foregroundStyle(isSelected ? .white : ClarityColor.secondaryText)
+                .foregroundStyle(isSelected ? ClarityColor.primaryButtonText : ClarityColor.secondaryText)
                 .padding(.horizontal, 13)
                 .padding(.vertical, 9)
                 .background(
                     Capsule()
-                        .fill(isSelected ? Color.black : ClarityColor.panelElevated)
+                        .fill(isSelected ? ClarityColor.primaryButtonBackground : ClarityColor.panelElevated)
                 )
         }
         .buttonStyle(.plain)

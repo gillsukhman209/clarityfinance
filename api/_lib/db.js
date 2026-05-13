@@ -103,6 +103,24 @@ async function ensureSchema() {
     `;
 
     await db`
+      create table if not exists credit_card_liabilities (
+        account_id text primary key,
+        user_id text,
+        item_id text not null references plaid_items(item_id) on delete cascade,
+        minimum_payment_amount numeric,
+        next_payment_due_date date,
+        last_payment_amount numeric,
+        last_payment_date date,
+        last_statement_balance numeric,
+        last_statement_issue_date date,
+        is_overdue boolean,
+        apr_percentage numeric,
+        raw jsonb not null default '{}'::jsonb,
+        updated_at timestamptz not null default now()
+      )
+    `;
+
+    await db`
       create table if not exists removed_accounts (
         user_id text not null,
         account_id text not null,
@@ -138,6 +156,8 @@ async function ensureSchema() {
     await db`create index if not exists transactions_account_date_idx on transactions(account_id, date desc)`;
     await db`create index if not exists accounts_user_idx on accounts(user_id)`;
     await db`create index if not exists accounts_item_idx on accounts(item_id)`;
+    await db`create index if not exists credit_card_liabilities_user_idx on credit_card_liabilities(user_id)`;
+    await db`create index if not exists credit_card_liabilities_item_idx on credit_card_liabilities(item_id)`;
     await db`create index if not exists removed_accounts_user_idx on removed_accounts(user_id)`;
     await db`create index if not exists devices_user_idx on devices(user_id)`;
     await db`create index if not exists plaid_items_user_idx on plaid_items(user_id)`;

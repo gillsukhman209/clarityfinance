@@ -29,6 +29,8 @@ final class FinanceStore {
     var authStatusMessage: String?
     var authErrorMessage: String?
     var isAuthActionRunning = false
+    var creditCardLiabilityStatusMessage: String?
+    var creditCardLiabilityErrorMessage: String?
 
     private let plaidClient = PlaidSandboxClient()
     private let fileURL: URL
@@ -211,6 +213,24 @@ final class FinanceStore {
         return data.transactions.filter { selectedAccountIDs.contains($0.accountID) }
     }
 
+    var filteredCreditCardLiabilities: [CreditCardLiability] {
+        let visibleCreditAccountIDs = Set(filteredAccounts.filter { $0.kind == .creditCard }.map(\.id))
+        return data.creditCardLiabilities
+            .filter { visibleCreditAccountIDs.contains($0.accountID) }
+            .sorted { lhs, rhs in
+                switch (lhs.nextPaymentDueDate, rhs.nextPaymentDueDate) {
+                case let (left?, right?):
+                    return left < right
+                case (_?, nil):
+                    return true
+                case (nil, _?):
+                    return false
+                case (nil, nil):
+                    return lhs.accountID < rhs.accountID
+                }
+            }
+    }
+
     var filteredSubscriptions: [SubscriptionItem] {
         let activeSubscriptions = correctedRecurringCharges.filter {
             let key = FinanceCoachEngine.subscriptionKey($0)
@@ -305,6 +325,10 @@ final class FinanceStore {
 
     func account(for accountID: String) -> FinancialAccount? {
         data.accounts.first { $0.id == accountID }
+    }
+
+    func creditCardLiability(for accountID: String) -> CreditCardLiability? {
+        data.creditCardLiabilities.first { $0.accountID == accountID }
     }
 
     func removeAccount(_ account: FinancialAccount) {
@@ -420,7 +444,7 @@ final class FinanceStore {
 
     func verifyCurrentAuthSessionWithBackend() async {
         recordDiagnostic("Backend auth verification started. signedIn=\(authSession != nil).")
-        guard let authSession else {
+        guard authSession != nil else {
             authErrorMessage = "Sign in first."
             recordDiagnostic("Backend auth verification stopped: no Supabase session.")
             return
@@ -438,6 +462,7 @@ final class FinanceStore {
         defer { isAuthActionRunning = false }
 
         do {
+            let authSession = try await freshAuthSession(context: "backend auth verification")
             let service = SupabaseAuthService(configuration: configuration)
             let user = try await service.verifyWithBackend(authSession)
             authStatusMessage = "Backend verified \(user.email?.isEmpty == false ? user.email! : user.id)."
@@ -583,7 +608,7 @@ final class FinanceStore {
     func registerPlaidItemsWithNotificationBackend() async {
         recordDiagnostic("Register Plaid tapped/entered. enabled=\(viralNotificationPreferences.isEnabled), tokenPresent=\(apnsDeviceToken != nil), plaidConnections=\(data.connections.count).")
         await refreshNotificationPermissionStatus()
-        guard let authSession else {
+        guard authSession != nil else {
             notificationErrorMessage = "Sign in with Apple first."
             recordDiagnostic("Register Plaid stopped: Supabase auth session missing.")
             return
@@ -606,8 +631,9 @@ final class FinanceStore {
         notificationErrorMessage = nil
         defer { isNotificationActionRunning = false }
 
-        let client = NotificationBackendClient(preferences: viralNotificationPreferences, authSession: authSession)
         do {
+            let authSession = try await freshAuthSession(context: "notification Plaid registration")
+            let client = NotificationBackendClient(preferences: viralNotificationPreferences, authSession: authSession)
             recordDiagnostic("Registering APNs device with backend. deviceID=\(notificationDeviceID), tokenLength=\(apnsDeviceToken.count).")
             try await client.registerDevice(deviceID: notificationDeviceID, apnsToken: apnsDeviceToken)
 
@@ -636,7 +662,7 @@ final class FinanceStore {
 
     func registerNotificationDeviceIfPossible() async {
         recordDiagnostic("registerNotificationDeviceIfPossible() entered. enabled=\(viralNotificationPreferences.isEnabled), tokenPresent=\(apnsDeviceToken != nil).")
-        guard let authSession else {
+        guard authSession != nil else {
             recordDiagnostic("registerNotificationDeviceIfPossible() skipped: Supabase auth session missing.")
             return
         }
@@ -648,6 +674,7 @@ final class FinanceStore {
         do {
             notificationStatusMessage = "Registering this iPhone with Clarity backend..."
             notificationErrorMessage = nil
+            let authSession = try await freshAuthSession(context: "notification device registration")
             let client = NotificationBackendClient(preferences: viralNotificationPreferences, authSession: authSession)
             recordDiagnostic("Registering device with notification backend. deviceID=\(notificationDeviceID), tokenLength=\(apnsDeviceToken.count).")
             try await client.registerDevice(deviceID: notificationDeviceID, apnsToken: apnsDeviceToken)
@@ -664,7 +691,7 @@ final class FinanceStore {
     func sendTestViralNotification() async {
         recordDiagnostic("Test notification tapped/entered. enabled=\(viralNotificationPreferences.isEnabled), tokenPresent=\(apnsDeviceToken != nil).")
         await refreshNotificationPermissionStatus()
-        guard let authSession else {
+        guard authSession != nil else {
             lastErrorMessage = "Sign in with Apple first."
             notificationErrorMessage = "Sign in with Apple first."
             recordDiagnostic("Test notification stopped: Supabase auth session missing.")
@@ -691,6 +718,7 @@ final class FinanceStore {
                 return
             }
             notificationStatusMessage = "Sending test notification..."
+            let authSession = try await freshAuthSession(context: "test notification")
             let client = NotificationBackendClient(preferences: viralNotificationPreferences, authSession: authSession)
             recordDiagnostic("Sending test notification through backend. deviceID=\(notificationDeviceID).")
             try await client.sendTestNotification(deviceID: notificationDeviceID)
@@ -756,6 +784,7 @@ final class FinanceStore {
                 profile: profile
             )
             let accounts = try await plaidClient.fetchAccounts(credentials: credentials, connection: connection, environment: .sandbox)
+            let liabilities = await fetchLiabilitiesIfAvailable(for: connection, environment: .sandbox)
             let sync = try await syncTransactionsWithInitialPolling(
                 connection: &connection,
                 environment: .sandbox,
@@ -765,6 +794,7 @@ final class FinanceStore {
 
             data.connections.append(connection)
             upsert(accounts: accounts)
+            upsert(creditCardLiabilities: liabilities)
             upsert(transactions: sync.transactions)
             removeTransactions(ids: sync.removedTransactionIDs)
             rebuildDerivedData()
@@ -796,6 +826,7 @@ final class FinanceStore {
                 let environment = environment(for: connection)
                 try? await refreshTransactions(for: connection, environment: environment)
                 let accounts = try await fetchAccounts(for: connection, environment: environment)
+                let liabilities = await fetchLiabilitiesIfAvailable(for: connection, environment: environment)
                 let sync = try await syncTransactionsWithInitialPolling(
                     connection: &connection,
                     environment: environment,
@@ -804,6 +835,7 @@ final class FinanceStore {
                 connection.lastSyncedAt = Date()
                 data.connections[index] = connection
                 upsert(accounts: accounts)
+                upsert(creditCardLiabilities: liabilities)
                 upsert(transactions: sync.transactions)
                 removeTransactions(ids: sync.removedTransactionIDs)
                 recordDiagnostic("Refreshed \(accounts.count) account(s) and \(sync.transactions.count) transaction update(s) for \(connection.institutionName).")
@@ -844,7 +876,7 @@ final class FinanceStore {
     func connectRealBank() async {
         recordDiagnostic("connectRealBank() entered. isSyncing=\(isSyncing), signedIn=\(authSession != nil).")
 
-        guard let authSession else {
+        guard authSession != nil else {
             lastErrorMessage = "Sign in with Apple before connecting a real bank."
             recordDiagnostic("connectRealBank() stopped: missing Supabase auth session.")
             return
@@ -857,6 +889,7 @@ final class FinanceStore {
         recordDiagnostic("Calling backend /api/plaid/link/token/create in Production. linkCustomization=\(credentials.normalizedLinkCustomizationName ?? "default"), daysRequested=\(PlaidSandboxClient.requestedTransactionHistoryDays).")
 
         do {
+            let authSession = try await freshAuthSession(context: "real bank link token")
             let hostedSession = try await plaidClient.createHostedLinkSession(
                 authSession: authSession,
                 linkCustomizationName: credentials.normalizedLinkCustomizationName,
@@ -884,7 +917,7 @@ final class FinanceStore {
             return
         }
 
-        guard let authSession else {
+        guard authSession != nil else {
             lastErrorMessage = "Sign in with Apple before importing a real bank."
             recordDiagnostic("finishRealBankConnection() stopped: missing Supabase auth session.")
             return
@@ -896,6 +929,7 @@ final class FinanceStore {
         recordDiagnostic("Polling Plaid /link/token/get for completed Hosted Link session.")
 
         do {
+            let authSession = try await freshAuthSession(context: "real bank import")
             let publicTokens = try await waitForHostedPublicTokens(linkToken: hostedLinkSession.linkToken)
             recordDiagnostic("Plaid returned \(publicTokens.count) public token(s).")
 
@@ -911,6 +945,7 @@ final class FinanceStore {
             )
             recordDiagnostic("Public token exchanged. institution=\(connection.institutionName), itemIDLength=\(connection.itemID.count). Fetching accounts and transactions.")
             let accounts = try await fetchAccounts(for: connection, environment: .production)
+            let liabilities = await fetchLiabilitiesIfAvailable(for: connection, environment: .production)
             let sync = try await syncTransactionsWithInitialPolling(
                 connection: &connection,
                 environment: .production,
@@ -921,6 +956,7 @@ final class FinanceStore {
 
             data.connections.append(connection)
             upsert(accounts: accounts)
+            upsert(creditCardLiabilities: liabilities)
             upsert(transactions: sync.transactions)
             removeTransactions(ids: sync.removedTransactionIDs)
             rebuildDerivedData()
@@ -1035,6 +1071,7 @@ final class FinanceStore {
                 connection.cursor = nil
 
                 let accounts = try await fetchAccounts(for: connection, environment: environment)
+                let liabilities = await fetchLiabilitiesIfAvailable(for: connection, environment: environment)
                 let sync = try await syncTransactionsWithInitialPolling(
                     connection: &connection,
                     environment: environment,
@@ -1044,6 +1081,7 @@ final class FinanceStore {
                 connection.lastSyncedAt = Date()
                 data.connections[index] = connection
                 upsert(accounts: accounts)
+                upsert(creditCardLiabilities: liabilities)
                 upsert(transactions: sync.transactions)
                 removeTransactions(ids: sync.removedTransactionIDs)
                 recordDiagnostic("Backfill synced \(sync.transactions.count) transaction update(s) for \(connection.institutionName).")
@@ -1121,6 +1159,7 @@ final class FinanceStore {
         data.ignoredSubscriptionKeys = data.ignoredSubscriptionKeys.intersection(validSubscriptionKeys)
         data.recurringChargeCorrections = data.recurringChargeCorrections.filter { validSubscriptionKeys.contains($0.key) }
         let validAccountIDs = Set(data.accounts.map(\.id))
+        data.creditCardLiabilities.removeAll { !validAccountIDs.contains($0.accountID) }
         selectedAccountIDs = selectedAccountIDs.filter { validAccountIDs.contains($0) }
         recurringDiagnostics = []
 
@@ -1192,6 +1231,20 @@ final class FinanceStore {
         selectedAccountIDs = selectedAccountIDs.intersection(validAccountIDs)
     }
 
+    private func upsert(creditCardLiabilities liabilities: [CreditCardLiability]) {
+        for liability in liabilities {
+            guard !data.removedAccountIDs.contains(liability.accountID) else {
+                continue
+            }
+
+            if let index = data.creditCardLiabilities.firstIndex(where: { $0.accountID == liability.accountID }) {
+                data.creditCardLiabilities[index] = liability
+            } else {
+                data.creditCardLiabilities.append(liability)
+            }
+        }
+    }
+
     private func upsert(transactions: [FinanceTransaction]) {
         var didChangeTransactions = false
 
@@ -1223,6 +1276,7 @@ final class FinanceStore {
         data.removedAccountIDs.insert(accountID)
         data.accounts.removeAll { $0.id == accountID }
         data.transactions.removeAll { $0.accountID == accountID }
+        data.creditCardLiabilities.removeAll { $0.accountID == accountID }
         data.netWorthSnapshots = []
         selectedAccountIDs.remove(accountID)
 
@@ -1426,9 +1480,10 @@ final class FinanceStore {
 
     private func fetchAccounts(for connection: PlaidConnection, environment: PlaidEnvironment) async throws -> [FinancialAccount] {
         if shouldUseBackendPlaid(for: connection, environment: environment) {
-            guard let authSession else {
+            guard authSession != nil else {
                 throw PlaidError.api("Sign in with Apple before syncing this Plaid account.")
             }
+            let authSession = try await freshAuthSession(context: "Plaid accounts fetch")
             return try await plaidClient.fetchAccounts(authSession: authSession, connection: connection)
         }
 
@@ -1436,7 +1491,7 @@ final class FinanceStore {
     }
 
     private func restoreCloudDataIfPossible(trigger: String) async {
-        guard let authSession else {
+        guard authSession != nil else {
             recordDiagnostic("Cloud restore skipped from \(trigger): missing Supabase session.")
             return
         }
@@ -1453,14 +1508,17 @@ final class FinanceStore {
         defer { isSyncing = false }
 
         do {
+            let authSession = try await freshAuthSession(context: "cloud restore")
             let snapshot = try await plaidClient.restoreBackendSnapshot(authSession: authSession)
             data.removedAccountIDs.formUnion(snapshot.removedAccountIDs)
             data.connections = mergeConnections(local: data.connections, cloud: snapshot.connections)
             upsert(accounts: snapshot.accounts)
             upsert(transactions: snapshot.transactions)
+            upsert(creditCardLiabilities: snapshot.creditCardLiabilities)
             let removedAccountIDs = data.removedAccountIDs
             data.accounts.removeAll { removedAccountIDs.contains($0.id) }
             data.transactions.removeAll { removedAccountIDs.contains($0.accountID) }
+            data.creditCardLiabilities.removeAll { removedAccountIDs.contains($0.accountID) }
             rebuildDerivedData()
             save()
             statusMessage = "Restored \(snapshot.accounts.count) account(s) and \(snapshot.transactions.count) transaction(s)."
@@ -1493,12 +1551,13 @@ final class FinanceStore {
     }
 
     private func removeBackendAccount(accountID: String, displayName: String) async {
-        guard let authSession else {
+        guard authSession != nil else {
             recordDiagnostic("Backend account removal skipped for \(accountID): missing Supabase session.")
             return
         }
 
         do {
+            let authSession = try await freshAuthSession(context: "backend account removal")
             try await plaidClient.removeBackendAccount(authSession: authSession, accountID: accountID)
             recordDiagnostic("Backend account removal completed for \(accountID).")
         } catch {
@@ -1509,20 +1568,53 @@ final class FinanceStore {
 
     private func syncTransactions(for connection: PlaidConnection, environment: PlaidEnvironment) async throws -> PlaidSyncResult {
         if shouldUseBackendPlaid(for: connection, environment: environment) {
-            guard let authSession else {
+            guard authSession != nil else {
                 throw PlaidError.api("Sign in with Apple before syncing this Plaid account.")
             }
+            let authSession = try await freshAuthSession(context: "Plaid transaction sync")
             return try await plaidClient.syncTransactions(authSession: authSession, connection: connection)
         }
 
         return try await plaidClient.syncTransactions(credentials: credentials, connection: connection, environment: environment)
     }
 
+    private func fetchLiabilitiesIfAvailable(for connection: PlaidConnection, environment: PlaidEnvironment) async -> [CreditCardLiability] {
+        do {
+            if shouldUseBackendPlaid(for: connection, environment: environment) {
+                guard authSession != nil else {
+                    throw PlaidError.api("Sign in with Apple before syncing credit card details.")
+                }
+                let authSession = try await freshAuthSession(context: "Plaid liabilities fetch")
+                let liabilities = try await plaidClient.fetchLiabilities(authSession: authSession, connection: connection)
+                creditCardLiabilityErrorMessage = nil
+                creditCardLiabilityStatusMessage = liabilities.isEmpty
+                    ? "Plaid returned card balances, but no payment details for \(connection.institutionName). This usually means reconnect the card so Plaid can add Liabilities permission."
+                    : "Loaded payment details for \(liabilities.count) card\(liabilities.count == 1 ? "" : "s")."
+                recordDiagnostic("Fetched \(liabilities.count) credit card liability row(s) for \(connection.institutionName).")
+                return liabilities
+            }
+
+            let liabilities = try await plaidClient.fetchLiabilities(credentials: credentials, connection: connection, environment: environment)
+            creditCardLiabilityErrorMessage = nil
+            creditCardLiabilityStatusMessage = liabilities.isEmpty
+                ? "Plaid returned card balances, but no payment details for \(connection.institutionName). This usually means reconnect the card so Plaid can add Liabilities permission."
+                : "Loaded payment details for \(liabilities.count) card\(liabilities.count == 1 ? "" : "s")."
+            recordDiagnostic("Fetched \(liabilities.count) credit card liability row(s) for \(connection.institutionName).")
+            return liabilities
+        } catch {
+            creditCardLiabilityStatusMessage = nil
+            creditCardLiabilityErrorMessage = "Card payment details did not load: \(error.localizedDescription)"
+            recordDiagnostic("Credit card liabilities unavailable for \(connection.institutionName): \(error.localizedDescription)")
+            return []
+        }
+    }
+
     private func refreshTransactions(for connection: PlaidConnection, environment: PlaidEnvironment) async throws {
         if shouldUseBackendPlaid(for: connection, environment: environment) {
-            guard let authSession else {
+            guard authSession != nil else {
                 throw PlaidError.api("Sign in with Apple before refreshing this Plaid account.")
             }
+            let authSession = try await freshAuthSession(context: "Plaid transaction refresh")
             try await plaidClient.refreshTransactions(authSession: authSession, connection: connection)
             return
         }
@@ -2109,6 +2201,30 @@ final class FinanceStore {
             authErrorMessage = error.localizedDescription
             recordDiagnostic("Failed to save Supabase auth session: \(error.localizedDescription)")
         }
+    }
+
+    private func freshAuthSession(context: String) async throws -> SupabaseAuthSession {
+        guard let currentSession = authSession else {
+            throw SupabaseAuthError.backendRejected("Sign in with Apple first.")
+        }
+
+        guard currentSession.isExpiredSoon else {
+            return currentSession
+        }
+
+        guard let configuration = SupabaseAuthConfiguration.load() else {
+            throw SupabaseAuthError.missingConfiguration
+        }
+
+        recordDiagnostic("Supabase session is expired or expiring before \(context). Refreshing access token.")
+        let service = SupabaseAuthService(configuration: configuration)
+        let refreshedSession = try await service.refreshSession(currentSession)
+        authSession = refreshedSession
+        saveAuthSession(refreshedSession)
+        authStatusMessage = "Signed in as \(refreshedSession.displayName)."
+        authErrorMessage = nil
+        recordDiagnostic("Supabase session refreshed for \(context). expiresAt=\(refreshedSession.expiresAt.formatted(.dateTime.hour().minute().second())).")
+        return refreshedSession
     }
 
     private static func loadSavedAuthSession() -> SupabaseAuthSession? {

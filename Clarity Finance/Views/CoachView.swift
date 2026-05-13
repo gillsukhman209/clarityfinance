@@ -444,12 +444,12 @@ private struct CoachToolButton: View {
                     .lineLimit(1)
                 Spacer(minLength: 0)
             }
-            .foregroundStyle(isSelected ? .white : ClarityColor.primaryText)
+            .foregroundStyle(isSelected ? ClarityColor.primaryButtonText : ClarityColor.primaryText)
             .padding(.horizontal, 14)
             .padding(.vertical, 14)
             .background(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(isSelected ? Color.black : ClarityColor.panelElevated)
+                    .fill(isSelected ? ClarityColor.primaryButtonBackground : ClarityColor.panelElevated)
             )
         }
         .buttonStyle(.plain)
@@ -610,7 +610,7 @@ private struct BudgetControlRow: View {
     private var progressColor: Color {
         if budget.spent > budget.limit { return ClarityColor.red }
         if budget.progress > 0.82 { return ClarityColor.purple }
-        return Color.black
+        return ClarityColor.primaryText
     }
 
     var body: some View {

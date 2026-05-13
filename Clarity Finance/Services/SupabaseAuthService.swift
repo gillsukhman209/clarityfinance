@@ -112,6 +112,34 @@ struct SupabaseAuthService {
         return decoded.session
     }
 
+    func refreshSession(_ authSession: SupabaseAuthSession) async throws -> SupabaseAuthSession {
+        let endpoint = configuration.url
+            .appending(path: "auth/v1/token")
+            .appending(queryItems: [URLQueryItem(name: "grant_type", value: "refresh_token")])
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue(configuration.anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(configuration.anonKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            RefreshTokenRequest(refreshToken: authSession.refreshToken)
+        )
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw SupabaseAuthError.invalidResponse
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let message = SupabaseAuthService.errorMessage(from: data)
+            throw SupabaseAuthError.backendRejected(message)
+        }
+
+        let decoded = try JSONDecoder().decode(SupabaseTokenResponse.self, from: data)
+        return decoded.session
+    }
+
     func verifyWithBackend(_ authSession: SupabaseAuthSession) async throws -> SupabaseBackendUser {
         guard let endpoint = URL(string: backendBaseURL + "/api/auth/me") else {
             throw SupabaseAuthError.invalidResponse
@@ -184,6 +212,14 @@ private struct AppleIDTokenRequest: Encodable {
         case provider
         case idToken = "id_token"
         case nonce
+    }
+}
+
+private struct RefreshTokenRequest: Encodable {
+    var refreshToken: String
+
+    enum CodingKeys: String, CodingKey {
+        case refreshToken = "refresh_token"
     }
 }
 

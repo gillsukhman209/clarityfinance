@@ -93,7 +93,7 @@ struct PlaidSandboxClient {
                 clientID: credentials.clientID,
                 secret: PlaidEnvironment.sandbox.secret(from: credentials),
                 institutionID: institution.id,
-                initialProducts: ["transactions"],
+                initialProducts: ["transactions", "liabilities"],
                 options: SandboxPublicTokenOptions(
                     overrideUsername: profile.username,
                     overridePassword: profile.password,
@@ -153,10 +153,30 @@ struct PlaidSandboxClient {
                 kind: account.accountKind,
                 currentBalance: account.balances.current ?? 0,
                 availableBalance: account.balances.available,
+                creditLimit: account.balances.limit,
                 currencyCode: account.balances.isoCurrencyCode ?? "USD",
                 isManual: false
             )
         }
+    }
+
+    func fetchLiabilities(
+        credentials: PlaidCredentials,
+        connection: PlaidConnection,
+        environment: PlaidEnvironment
+    ) async throws -> [CreditCardLiability] {
+        let response = try await post(
+            path: "/liabilities/get",
+            body: TokenRequest(
+                clientID: credentials.clientID,
+                secret: environment.secret(from: credentials),
+                accessToken: connection.accessToken
+            ),
+            response: LiabilitiesResponse.self,
+            environment: environment
+        )
+
+        return response.creditCardLiabilities
     }
 
     func syncTransactions(
@@ -254,7 +274,7 @@ struct PlaidSandboxClient {
                 clientID: credentials.clientID,
                 secret: environment.secret(from: credentials),
                 clientName: "Clarity Finance",
-                products: ["transactions"],
+                products: ["transactions", "liabilities"],
                 countryCodes: ["US"],
                 language: "en",
                 user: LinkTokenUser(clientUserID: "local-owner"),
@@ -414,10 +434,25 @@ struct PlaidSandboxClient {
                 kind: account.accountKind,
                 currentBalance: account.balances.current ?? 0,
                 availableBalance: account.balances.available,
+                creditLimit: account.balances.limit,
                 currencyCode: account.balances.isoCurrencyCode ?? "USD",
                 isManual: false
             )
         }
+    }
+
+    func fetchLiabilities(
+        authSession: SupabaseAuthSession,
+        connection: PlaidConnection
+    ) async throws -> [CreditCardLiability] {
+        let response = try await postBackend(
+            path: "/api/plaid/liabilities/get",
+            body: BackendItemRequest(itemID: connection.itemID, cursor: nil),
+            response: LiabilitiesResponse.self,
+            authSession: authSession
+        )
+
+        return response.creditCardLiabilities
     }
 
     func syncTransactions(
@@ -621,6 +656,7 @@ struct BackendFinanceSnapshot {
     var connections: [PlaidConnection]
     var accounts: [FinancialAccount]
     var transactions: [FinanceTransaction]
+    var creditCardLiabilities: [CreditCardLiability]
     var removedAccountIDs: Set<String>
 }
 
@@ -628,13 +664,24 @@ private struct BackendSnapshotResponse: Decodable {
     var connections: [BackendConnection]
     var accounts: [BackendAccount]
     var transactions: [BackendTransaction]
+    var creditCardLiabilities: [BackendCreditCardLiability]
     var removedAccountIDs: [String]
 
     enum CodingKeys: String, CodingKey {
         case connections
         case accounts
         case transactions
+        case creditCardLiabilities = "credit_card_liabilities"
         case removedAccountIDs = "removed_account_ids"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        connections = try container.decodeIfPresent([BackendConnection].self, forKey: .connections) ?? []
+        accounts = try container.decodeIfPresent([BackendAccount].self, forKey: .accounts) ?? []
+        transactions = try container.decodeIfPresent([BackendTransaction].self, forKey: .transactions) ?? []
+        creditCardLiabilities = try container.decodeIfPresent([BackendCreditCardLiability].self, forKey: .creditCardLiabilities) ?? []
+        removedAccountIDs = try container.decodeIfPresent([String].self, forKey: .removedAccountIDs) ?? []
     }
 
     var snapshot: BackendFinanceSnapshot {
@@ -642,6 +689,7 @@ private struct BackendSnapshotResponse: Decodable {
             connections: connections.map(\.connection),
             accounts: accounts.map(\.account),
             transactions: transactions.map(\.transaction),
+            creditCardLiabilities: creditCardLiabilities.map(\.liability),
             removedAccountIDs: Set(removedAccountIDs)
         )
     }
@@ -701,9 +749,61 @@ private struct BackendAccount: Decodable {
             kind: kind,
             currentBalance: currentBalance,
             availableBalance: availableBalance,
+            creditLimit: nil,
             currencyCode: currencyCode,
             isManual: isManual
         )
+    }
+}
+
+private struct BackendCreditCardLiability: Decodable {
+    var accountID: String
+    var minimumPaymentAmount: Double?
+    var nextPaymentDueDate: String?
+    var lastPaymentAmount: Double?
+    var lastPaymentDate: String?
+    var lastStatementBalance: Double?
+    var lastStatementIssueDate: String?
+    var isOverdue: Bool?
+    var aprPercentage: Double?
+    var updatedAt: String?
+
+    var liability: CreditCardLiability {
+        CreditCardLiability(
+            accountID: accountID,
+            minimumPaymentAmount: minimumPaymentAmount,
+            nextPaymentDueDate: Self.parseDate(nextPaymentDueDate),
+            lastPaymentAmount: lastPaymentAmount,
+            lastPaymentDate: Self.parseDate(lastPaymentDate),
+            lastStatementBalance: lastStatementBalance,
+            lastStatementIssueDate: Self.parseDate(lastStatementIssueDate),
+            isOverdue: isOverdue,
+            aprPercentage: aprPercentage,
+            updatedAt: Self.parseTimestamp(updatedAt)
+        )
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case accountID = "account_id"
+        case minimumPaymentAmount = "minimum_payment_amount"
+        case nextPaymentDueDate = "next_payment_due_date"
+        case lastPaymentAmount = "last_payment_amount"
+        case lastPaymentDate = "last_payment_date"
+        case lastStatementBalance = "last_statement_balance"
+        case lastStatementIssueDate = "last_statement_issue_date"
+        case isOverdue = "is_overdue"
+        case aprPercentage = "apr_percentage"
+        case updatedAt = "updated_at"
+    }
+
+    private static func parseDate(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        return BackendTransaction.dateFormatter.date(from: value)
+    }
+
+    private static func parseTimestamp(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        return ISO8601DateFormatter().date(from: value) ?? BackendTransaction.dateFormatter.date(from: value)
     }
 }
 
@@ -1098,12 +1198,93 @@ private struct PlaidAccount: Decodable {
 private struct PlaidBalances: Decodable {
     var available: Double?
     var current: Double?
+    var limit: Double?
     var isoCurrencyCode: String?
 
     enum CodingKeys: String, CodingKey {
         case available
         case current
+        case limit
         case isoCurrencyCode = "iso_currency_code"
+    }
+}
+
+private struct LiabilitiesResponse: Decodable {
+    var liabilities: PlaidLiabilities
+
+    var creditCardLiabilities: [CreditCardLiability] {
+        liabilities.credit.map(\.creditCardLiability)
+    }
+}
+
+private struct PlaidLiabilities: Decodable {
+    var credit: [PlaidCreditLiability]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        credit = try container.decodeIfPresent([PlaidCreditLiability].self, forKey: .credit) ?? []
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case credit
+    }
+}
+
+private struct PlaidCreditLiability: Decodable {
+    var accountID: String
+    var aprs: [PlaidCreditAPR]
+    var isOverdue: Bool?
+    var lastPaymentAmount: Double?
+    var lastPaymentDate: String?
+    var lastStatementBalance: Double?
+    var lastStatementIssueDate: String?
+    var minimumPaymentAmount: Double?
+    var nextPaymentDueDate: String?
+
+    enum CodingKeys: String, CodingKey {
+        case accountID = "account_id"
+        case aprs
+        case isOverdue = "is_overdue"
+        case lastPaymentAmount = "last_payment_amount"
+        case lastPaymentDate = "last_payment_date"
+        case lastStatementBalance = "last_statement_balance"
+        case lastStatementIssueDate = "last_statement_issue_date"
+        case minimumPaymentAmount = "minimum_payment_amount"
+        case nextPaymentDueDate = "next_payment_due_date"
+    }
+
+    var creditCardLiability: CreditCardLiability {
+        CreditCardLiability(
+            accountID: accountID,
+            minimumPaymentAmount: minimumPaymentAmount,
+            nextPaymentDueDate: Self.dateFormatter.date(from: nextPaymentDueDate ?? ""),
+            lastPaymentAmount: lastPaymentAmount,
+            lastPaymentDate: Self.dateFormatter.date(from: lastPaymentDate ?? ""),
+            lastStatementBalance: lastStatementBalance,
+            lastStatementIssueDate: Self.dateFormatter.date(from: lastStatementIssueDate ?? ""),
+            isOverdue: isOverdue,
+            aprPercentage: aprs
+                .map(\.aprPercentage)
+                .filter { $0 > 0 }
+                .max(),
+            updatedAt: Date()
+        )
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter
+    }()
+}
+
+private struct PlaidCreditAPR: Decodable {
+    var aprPercentage: Double
+
+    enum CodingKeys: String, CodingKey {
+        case aprPercentage = "apr_percentage"
     }
 }
 
