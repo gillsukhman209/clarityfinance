@@ -426,27 +426,27 @@ private struct CreditCardsTab: View {
 
     private var minimumPaymentTotal: Double {
         creditAccounts.reduce(0) { total, account in
-            total + (store.creditCardLiability(for: account.id)?.minimumPaymentAmount ?? 0)
+            total + (creditCardLiability(for: account.id)?.minimumPaymentAmount ?? 0)
         }
     }
 
     private var cardsWithLiabilityDetails: Int {
-        creditAccounts.filter { store.creditCardLiability(for: $0.id) != nil }.count
+        creditAccounts.filter { creditCardLiability(for: $0.id) != nil }.count
     }
 
     private var cardsWithMinimumPayment: Int {
-        creditAccounts.filter { store.creditCardLiability(for: $0.id)?.minimumPaymentAmount != nil }.count
+        creditAccounts.filter { creditCardLiability(for: $0.id)?.minimumPaymentAmount != nil }.count
     }
 
     private var nextDueDate: Date? {
         creditAccounts
-            .compactMap { store.creditCardLiability(for: $0.id)?.nextPaymentDueDate }
+            .compactMap { creditCardLiability(for: $0.id)?.nextPaymentDueDate }
             .min()
     }
 
     private var cardInsights: [CreditCardInsight] {
         creditAccounts.map { account in
-            CreditCardInsight(account: account, liability: store.creditCardLiability(for: account.id))
+            CreditCardInsight(account: account, liability: creditCardLiability(for: account.id))
         }
     }
 
@@ -508,6 +508,7 @@ private struct CreditCardsTab: View {
             if !cardInsights.isEmpty {
                 CreditInterestCoachCard(insights: cardInsights)
                 CreditPayoffOrderCard(insights: cardInsights)
+                CreditMissingDetailsCard(insights: cardInsights)
             }
 
             VStack(alignment: .leading, spacing: 12) {
@@ -526,7 +527,7 @@ private struct CreditCardsTab: View {
                         } label: {
                             CreditCardLiabilityRow(
                                 account: account,
-                                liability: store.creditCardLiability(for: account.id)
+                                liability: creditCardLiability(for: account.id)
                             )
                         }
                         .buttonStyle(.plain)
@@ -539,6 +540,8 @@ private struct CreditCardsTab: View {
             }
             .padding(18)
             .clarityCard(radius: 20)
+
+            Color.clear.frame(height: 56)
         }
         .refreshable {
             guard !store.data.connections.isEmpty else { return }
@@ -547,13 +550,27 @@ private struct CreditCardsTab: View {
         .sheet(item: $selectedCard) { account in
             CreditCardDetailView(
                 account: account,
-                liability: store.creditCardLiability(for: account.id)
+                liability: creditCardLiability(for: account.id)
             )
         }
     }
 
     private var minimumDueCaption: String {
         if let nextDueDate {
+            let days = Calendar.current.dateComponents(
+                [.day],
+                from: Calendar.current.startOfDay(for: Date()),
+                to: Calendar.current.startOfDay(for: nextDueDate)
+            ).day ?? 0
+
+            if days < 0 {
+                return "Overdue \(nextDueDate.formatted(.dateTime.month(.abbreviated).day()))"
+            }
+
+            if days == 0 {
+                return "Due today"
+            }
+
             return "Next due \(nextDueDate.formatted(.dateTime.month(.abbreviated).day()))"
         }
 
@@ -592,7 +609,7 @@ private struct CreditCardsTab: View {
 
     private func creditCardDisplayScore(_ account: FinancialAccount) -> Int {
         var score = 0
-        let liability = store.creditCardLiability(for: account.id)
+        let liability = creditCardLiability(for: account.id)
 
         if liability != nil { score += 100 }
         if liability?.minimumPaymentAmount != nil { score += 40 }
@@ -601,6 +618,10 @@ private struct CreditCardsTab: View {
         if account.availableBalance != nil { score += 5 }
 
         return score
+    }
+
+    private func creditCardLiability(for accountID: String) -> CreditCardLiability? {
+        return store.creditCardLiability(for: accountID)
     }
 
     private func creditCardDuplicateKey(_ account: FinancialAccount) -> String {
@@ -655,6 +676,18 @@ private struct CreditCardInsight: Identifiable {
         return balance * (apr / 100) / 12
     }
 
+    var hasPaymentGuidance: Bool {
+        liability != nil
+    }
+
+    var needsPaymentDetails: Bool {
+        liability == nil || (minimumPayment == nil && dueDate == nil)
+    }
+
+    var statementTarget: Double? {
+        statementBalance ?? balance.nonZero
+    }
+
     var daysUntilDue: Int? {
         guard let dueDate else { return nil }
         let calendar = Calendar.current
@@ -702,10 +735,6 @@ private struct CreditCardInsight: Identifiable {
             }
         }
 
-        if liability == nil {
-            score += 20
-        }
-
         return score
     }
 
@@ -736,20 +765,36 @@ private struct CreditCardInsight: Identifiable {
             return CreditRiskBadge(title: "Info missing", symbolName: "questionmark.circle.fill", tint: ClarityColor.secondaryText)
         }
 
-        return CreditRiskBadge(title: "On time", symbolName: "checkmark.circle.fill", tint: ClarityColor.green)
+        return CreditRiskBadge(title: "Not overdue", symbolName: "checkmark.circle.fill", tint: ClarityColor.green)
     }
 
     var actionLine: String {
         if liability?.isOverdue == true || (daysUntilDue ?? 99) < 0 {
+            if let minimumPayment, let statementTarget {
+                return "Late. Pay \(MoneyFormat.currency(minimumPayment)) now to stop late damage. Pay \(MoneyFormat.currency(statementTarget)) to cut interest."
+            }
+
+            if let minimumPayment {
+                return "Late. Pay \(MoneyFormat.currency(minimumPayment)) now so it does not get worse."
+            }
+
             return "This card looks late. Pay this first so it does not get worse."
         }
 
         if let daysUntilDue {
             if daysUntilDue == 0 {
+                if let minimumPayment, let statementTarget {
+                    return "Due today. Pay \(MoneyFormat.currency(minimumPayment)) minimum, or \(MoneyFormat.currency(statementTarget)) to aim for no interest."
+                }
+
                 return "Due today. Minimum keeps it current; statement balance is the interest-free target."
             }
 
             if daysUntilDue <= 7 {
+                if let statementTarget {
+                    return "Due in \(daysUntilDue) day\(daysUntilDue == 1 ? "" : "s"). Try to pay \(MoneyFormat.currency(statementTarget)) before then."
+                }
+
                 return "Due in \(daysUntilDue) day\(daysUntilDue == 1 ? "" : "s"). Try to pay the statement balance before then."
             }
         }
@@ -766,7 +811,7 @@ private struct CreditCardInsight: Identifiable {
             return "Balance is here, but Plaid did not return due date or minimum payment details for this card."
         }
 
-        return "Looks on time. Keep paying the statement balance by the due date."
+        return "Not overdue. Keep paying the statement balance by the due date."
     }
 
     var explanationLines: [CreditExplanationLine] {
@@ -783,10 +828,18 @@ private struct CreditCardInsight: Identifiable {
         }
 
         if let statementBalance {
+            let message: String
+
+            if (daysUntilDue ?? 1) < 0 {
+                message = "The due date passed. Paying \(MoneyFormat.currency(statementBalance)) still helps reduce interest."
+            } else {
+                message = "Pay \(MoneyFormat.currency(statementBalance)) by the due date if you want the best chance to avoid interest."
+            }
+
             lines.append(
                 CreditExplanationLine(
                     title: "Statement balance = interest-free target",
-                    message: "Pay \(MoneyFormat.currency(statementBalance)) by the due date if you want the best chance to avoid interest.",
+                    message: message,
                     symbolName: "target"
                 )
             )
@@ -805,8 +858,8 @@ private struct CreditCardInsight: Identifiable {
         if let utilization {
             lines.append(
                 CreditExplanationLine(
-                    title: "Usage = credit score pressure",
-                    message: "You are using \(utilization.formatted(.percent.precision(.fractionLength(0)))) of this card. Lower is usually better for your score.",
+                    title: "Usage = \(utilizationTier.title.lowercased())",
+                    message: "You are using \(utilization.formatted(.percent.precision(.fractionLength(0)))) of this card. \(utilizationTier.message)",
                     symbolName: "gauge.with.dots.needle.67percent"
                 )
             )
@@ -845,6 +898,21 @@ private struct CreditCardInsight: Identifiable {
 
         return "highest balance"
     }
+
+    var utilizationTier: CreditUtilizationTier {
+        guard let utilization else { return .unknown }
+
+        if utilization >= 0.80 { return .danger }
+        if utilization >= 0.50 { return .high }
+        if utilization >= 0.30 { return .watch }
+        return .good
+    }
+}
+
+private extension Double {
+    var nonZero: Double? {
+        self > 0 ? self : nil
+    }
 }
 
 private struct CreditRiskBadge: Identifiable {
@@ -861,11 +929,56 @@ private struct CreditExplanationLine: Identifiable {
     var symbolName: String
 }
 
+private enum CreditUtilizationTier {
+    case good
+    case watch
+    case high
+    case danger
+    case unknown
+
+    var title: String {
+        switch self {
+        case .good: "Healthy"
+        case .watch: "Watch"
+        case .high: "High"
+        case .danger: "Danger zone"
+        case .unknown: "Usage unknown"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .good:
+            return "That is a healthy credit-score zone."
+        case .watch:
+            return "This is okay, but lower is better for your score."
+        case .high:
+            return "This can start pressuring your credit score."
+        case .danger:
+            return "This is high enough to seriously pressure your credit score."
+        case .unknown:
+            return "Plaid did not return enough limit data to judge this card."
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .good: ClarityColor.green
+        case .watch: ClarityColor.orange
+        case .high: ClarityColor.orange
+        case .danger: ClarityColor.red
+        case .unknown: ClarityColor.secondaryText
+        }
+    }
+}
+
 private struct CreditInterestCoachCard: View {
     var insights: [CreditCardInsight]
 
     private var topInsight: CreditCardInsight? {
-        insights.max { $0.priorityScore < $1.priorityScore }
+        insights
+            .filter(\.hasPaymentGuidance)
+            .max { $0.priorityScore < $1.priorityScore }
     }
 
     private var minimumTotal: Double {
@@ -898,7 +1011,7 @@ private struct CreditInterestCoachCard: View {
 
             HStack(spacing: 10) {
                 CreditCardQuickStat(
-                    title: "Next due",
+                    title: nextDueIsOverdue ? "Overdue" : "Next due",
                     value: nextDueText,
                     symbolName: "calendar"
                 )
@@ -923,8 +1036,16 @@ private struct CreditInterestCoachCard: View {
     private var headline: String {
         guard let topInsight else { return "No cards to check yet." }
 
-        if topInsight.priorityScore >= 420 {
-            return "Pay \(shortCardName(topInsight.account)) first."
+        if topInsight.liability?.isOverdue == true || (topInsight.daysUntilDue ?? 99) < 0 {
+            return "Pay \(shortCardName(topInsight.account)) now. It is late."
+        }
+
+        if let daysUntilDue = topInsight.daysUntilDue, daysUntilDue <= 7 {
+            return "Pay \(shortCardName(topInsight.account)) next. Due in \(daysUntilDue)d."
+        }
+
+        if topInsight.priorityScore >= 220 {
+            return "Pay \(shortCardName(topInsight.account)) first. It is costing the most."
         }
 
         return "No obvious interest emergency right now."
@@ -932,7 +1053,27 @@ private struct CreditInterestCoachCard: View {
 
     private var nextDueText: String {
         guard let nextDueDate else { return "Missing" }
+        if nextDueIsOverdue {
+            let daysLate = abs(Calendar.current.dateComponents(
+                [.day],
+                from: Calendar.current.startOfDay(for: Date()),
+                to: Calendar.current.startOfDay(for: nextDueDate)
+            ).day ?? 0)
+
+            return "\(daysLate)d late"
+        }
+
         return nextDueDate.formatted(.dateTime.month(.abbreviated).day())
+    }
+
+    private var nextDueIsOverdue: Bool {
+        guard let nextDueDate else { return false }
+        let days = Calendar.current.dateComponents(
+            [.day],
+            from: Calendar.current.startOfDay(for: Date()),
+            to: Calendar.current.startOfDay(for: nextDueDate)
+        ).day ?? 0
+        return days < 0
     }
 
     private func shortCardName(_ account: FinancialAccount) -> String {
@@ -948,7 +1089,7 @@ private struct CreditPayoffOrderCard: View {
     var insights: [CreditCardInsight]
 
     private var priorityInsights: [CreditCardInsight] {
-        Array(insights.filter { $0.balance > 0 }.sorted { $0.priorityScore > $1.priorityScore }.prefix(3))
+        Array(insights.filter { $0.balance > 0 && $0.hasPaymentGuidance }.sorted { $0.priorityScore > $1.priorityScore }.prefix(3))
     }
 
     var body: some View {
@@ -1006,6 +1147,64 @@ private struct CreditPayoffOrderCard: View {
     }
 }
 
+private struct CreditMissingDetailsCard: View {
+    var insights: [CreditCardInsight]
+
+    private var missingInsights: [CreditCardInsight] {
+        insights.filter(\.needsPaymentDetails)
+    }
+
+    var body: some View {
+        if !missingInsights.isEmpty {
+            VStack(alignment: .leading, spacing: 14) {
+                SectionHeader(title: "Needs info", systemImage: "questionmark.circle.fill")
+
+                Text("These cards have balances, but Plaid did not return enough payment details. Do not rank them as pay-first until minimums and due dates come through.")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(ClarityColor.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                ForEach(missingInsights) { insight in
+                    HStack(spacing: 12) {
+                        IconBadge(symbolName: "creditcard.fill", tint: ClarityColor.secondaryText)
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(insight.account.name)
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(ClarityColor.primaryText)
+                                .lineLimit(1)
+
+                            Text(missingSubtitle(for: insight.account))
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(ClarityColor.secondaryText)
+                                .lineLimit(1)
+                        }
+
+                        Spacer()
+
+                        Text(MoneyFormat.currency(insight.balance))
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(ClarityColor.primaryText)
+                    }
+                }
+            }
+            .padding(18)
+            .clarityCard(radius: 20)
+        }
+    }
+
+    private func missingSubtitle(for account: FinancialAccount) -> String {
+        var parts = [account.institutionName]
+
+        if let mask = account.mask?.trimmingCharacters(in: .whitespacesAndNewlines), !mask.isEmpty {
+            parts.append("•••• \(mask)")
+        }
+
+        parts.append("missing due date")
+        return parts.joined(separator: " • ")
+    }
+}
+
 private struct CreditCardLiabilityRow: View {
     var account: FinancialAccount
     var liability: CreditCardLiability?
@@ -1057,7 +1256,7 @@ private struct CreditCardLiabilityRow: View {
 
                     if let nextPaymentDueDate = liability?.nextPaymentDueDate {
                         CreditCardQuickStat(
-                            title: "Due",
+                            title: insight.daysUntilDue.map { $0 < 0 ? "Late" : "Due" } ?? "Due",
                             value: nextPaymentDueDate.formatted(.dateTime.month(.abbreviated).day()),
                             symbolName: "calendar"
                         )
@@ -1071,6 +1270,10 @@ private struct CreditCardLiabilityRow: View {
                         )
                     }
                 }
+            }
+
+            if let utilization = insight.utilization {
+                CreditUtilizationBar(utilization: utilization, tier: insight.utilizationTier)
             }
 
             Text(insight.actionLine)
@@ -1158,6 +1361,44 @@ private struct CreditCardQuickStat: View {
     }
 }
 
+private struct CreditUtilizationBar: View {
+    var utilization: Double
+    var tier: CreditUtilizationTier
+
+    private var clampedUtilization: Double {
+        min(max(utilization, 0), 1)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text(tier.title)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(ClarityColor.primaryText)
+
+                Spacer()
+
+                Text(utilization.formatted(.percent.precision(.fractionLength(0))))
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(tier.tint)
+            }
+
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(ClarityColor.panelElevated)
+
+                    Capsule()
+                        .fill(tier.tint)
+                        .frame(width: max(8, proxy.size.width * clampedUtilization))
+                }
+            }
+            .frame(height: 8)
+        }
+        .padding(.top, 2)
+    }
+}
+
 private struct CreditCardMeaningCard: View {
     var insight: CreditCardInsight
 
@@ -1228,17 +1469,42 @@ private struct CreditCardDetailView: View {
                             }
                         }
 
-                        Text(MoneyFormat.currency(account.currentBalance))
-                            .font(.system(size: 44, weight: .bold))
-                            .foregroundStyle(ClarityColor.primaryText)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.65)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(detailHeroLabel)
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(ClarityColor.secondaryText)
+                                .textCase(.uppercase)
+
+                            Text(detailHeroAmount)
+                                .font(.system(size: 44, weight: .bold))
+                                .foregroundStyle(ClarityColor.primaryText)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.65)
+
+                            Text(detailHeroCaption)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(ClarityColor.secondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                     .padding(18)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .clarityCard(radius: 20)
 
                     CreditCardMeaningCard(insight: insight)
+
+                    if let utilization = insight.utilization {
+                        VStack(alignment: .leading, spacing: 12) {
+                            SectionHeader(title: "Credit usage", systemImage: "gauge.with.dots.needle.67percent")
+                            CreditUtilizationBar(utilization: utilization, tier: insight.utilizationTier)
+                            Text(insight.utilizationTier.message)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(ClarityColor.secondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(18)
+                        .clarityCard(radius: 20)
+                    }
 
                     CreditDetailList(rows: accountDetailRows)
 
@@ -1291,6 +1557,62 @@ private struct CreditCardDetailView: View {
 
     private var insight: CreditCardInsight {
         CreditCardInsight(account: account, liability: liability)
+    }
+
+    private var detailHeroLabel: String {
+        if liability?.isOverdue == true || (insight.daysUntilDue ?? 99) < 0 {
+            return "Pay now"
+        }
+
+        if insight.daysUntilDue != nil {
+            return "Pay target"
+        }
+
+        return "Balance"
+    }
+
+    private var detailHeroAmount: String {
+        if liability?.isOverdue == true || (insight.daysUntilDue ?? 99) < 0 {
+            if let minimumPayment = liability?.minimumPaymentAmount {
+                return MoneyFormat.currency(minimumPayment)
+            }
+        }
+
+        if let statementBalance = liability?.lastStatementBalance {
+            return MoneyFormat.currency(statementBalance)
+        }
+
+        if let minimumPayment = liability?.minimumPaymentAmount {
+            return MoneyFormat.currency(minimumPayment)
+        }
+
+        return MoneyFormat.currency(account.currentBalance)
+    }
+
+    private var detailHeroCaption: String {
+        if liability?.isOverdue == true || (insight.daysUntilDue ?? 99) < 0 {
+            if let dueDate = liability?.nextPaymentDueDate {
+                return "This card is overdue from \(dateText(dueDate)). Balance: \(MoneyFormat.currency(account.currentBalance))."
+            }
+
+            return "This card looks overdue. Balance: \(MoneyFormat.currency(account.currentBalance))."
+        }
+
+        if let dueDate = liability?.nextPaymentDueDate {
+            if let statementBalance = liability?.lastStatementBalance {
+                return "Pay \(MoneyFormat.currency(statementBalance)) by \(dateText(dueDate)) to aim for no interest."
+            }
+
+            if let minimumPayment = liability?.minimumPaymentAmount {
+                return "Pay at least \(MoneyFormat.currency(minimumPayment)) by \(dateText(dueDate)) to stay current."
+            }
+        }
+
+        if liability == nil {
+            return "Plaid did not return minimum payment or due date for this card."
+        }
+
+        return "Current balance. Payment target is unavailable."
     }
 
     private var accountDetailRows: [(title: String, value: String)] {
@@ -1353,7 +1675,7 @@ private struct CreditCardDetailView: View {
         }
 
         if let isOverdue = liability.isOverdue {
-            rows.append(("Status", isOverdue ? "Overdue" : "On time"))
+            rows.append(("Status", isOverdue ? "Overdue" : "Not overdue"))
         }
 
         if let updatedAt = liability.updatedAt {
@@ -1584,6 +1906,7 @@ private struct SettingsTab: View {
             appearanceCard
             authCard
             addAccountCard
+            appleCardAccessCard
             notificationsCard
             connectedAccountsCard
             toolsCard
@@ -1797,6 +2120,37 @@ private struct SettingsTab: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(SecondaryClarityButtonStyle())
+            #endif
+        }
+        .padding(18)
+        .clarityCard(radius: 20)
+    }
+
+    private var appleCardAccessCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(title: "Apple Card", systemImage: "apple.logo")
+
+            Text("Connect Apple Card directly from Wallet using Apple FinanceKit. This is separate from Plaid and can import balances, transactions, due dates, and minimum payments when Apple allows access.")
+                .font(.subheadline)
+                .foregroundStyle(ClarityColor.secondaryText)
+
+            #if os(iOS)
+            Button {
+                Task { await store.importAppleCardFromWallet() }
+            } label: {
+                Label("Connect Apple Card", systemImage: "wallet.pass.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(SecondaryClarityButtonStyle())
+            .disabled(store.isSyncing)
+
+            Text("Requires iOS 17.4+, Wallet data availability, user permission, and Apple approval for the FinanceKit entitlement.")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ClarityColor.secondaryText)
+            #else
+            Text("Direct Apple Card access is only available in the iPhone app. On Mac, import Apple Card PDFs instead.")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ClarityColor.secondaryText)
             #endif
         }
         .padding(18)

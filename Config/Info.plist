@@ -24,6 +24,8 @@
 	<string>$(SUPABASE_URL)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSFinancialDataUsageDescription</key>
+	<string>Clarity uses Apple Card and Wallet financial data to import balances, transactions, due dates, and payment details into your finance dashboard.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

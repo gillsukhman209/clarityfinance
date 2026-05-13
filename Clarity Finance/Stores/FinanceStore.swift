@@ -1053,6 +1053,32 @@ final class FinanceStore {
         }
     }
 
+    func importAppleCardFromWallet() async {
+        recordDiagnostic("Apple FinanceKit import entered. isSyncing=\(isSyncing).")
+
+        isSyncing = true
+        statusMessage = "Opening Apple Card access..."
+        lastErrorMessage = nil
+
+        do {
+            let importResult = try await AppleFinanceKitImportService.importAppleCardData()
+            upsert(accounts: importResult.accounts)
+            upsert(creditCardLiabilities: importResult.creditCardLiabilities)
+            upsert(transactions: importResult.transactions)
+            rebuildDerivedData()
+            save()
+            await analyzeSpendingWithAI(onlyMissing: true)
+
+            statusMessage = "Imported \(importResult.accounts.count) Apple Card account(s) and \(importResult.transactions.count) transaction(s)."
+            recordDiagnostic("Apple FinanceKit imported accounts=\(importResult.accounts.count), liabilities=\(importResult.creditCardLiabilities.count), transactions=\(importResult.transactions.count).")
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            recordDiagnostic("Apple FinanceKit import failed: \(error.localizedDescription)")
+        }
+
+        isSyncing = false
+    }
+
     func backfillTransactionHistory() async {
         guard !data.connections.isEmpty else {
             lastErrorMessage = "Connect a Plaid account before backfilling transaction history."
