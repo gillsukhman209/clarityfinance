@@ -737,6 +737,7 @@ private struct BackendAccount: Decodable {
     var kind: AccountKind
     var currentBalance: Double
     var availableBalance: Double?
+    var creditLimit: Double?
     var currencyCode: String
     var isManual: Bool
 
@@ -749,7 +750,7 @@ private struct BackendAccount: Decodable {
             kind: kind,
             currentBalance: currentBalance,
             availableBalance: availableBalance,
-            creditLimit: nil,
+            creditLimit: creditLimit,
             currencyCode: currencyCode,
             isManual: isManual
         )

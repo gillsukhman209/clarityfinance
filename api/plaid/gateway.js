@@ -103,6 +103,7 @@ async function upsertAccounts(db, userID, itemID, institutionName, accounts) {
         kind,
         current_balance,
         available_balance,
+        credit_limit,
         currency_code,
         raw,
         updated_at
@@ -117,6 +118,7 @@ async function upsertAccounts(db, userID, itemID, institutionName, accounts) {
         ${accountKind(account)},
         ${Number(account.balances?.current || 0)},
         ${account.balances?.available == null ? null : Number(account.balances.available)},
+        ${account.balances?.limit == null ? null : Number(account.balances.limit)},
         ${account.balances?.iso_currency_code || account.balances?.unofficial_currency_code || "USD"},
         ${account},
         now()
@@ -131,6 +133,7 @@ async function upsertAccounts(db, userID, itemID, institutionName, accounts) {
         kind = excluded.kind,
         current_balance = excluded.current_balance,
         available_balance = excluded.available_balance,
+        credit_limit = excluded.credit_limit,
         currency_code = excluded.currency_code,
         raw = excluded.raw,
         updated_at = now()
@@ -248,6 +251,7 @@ function snapshotAccount(row) {
     kind: row.kind || "manual",
     currentBalance: Number(row.current_balance || 0),
     availableBalance: row.available_balance == null ? null : Number(row.available_balance),
+    creditLimit: row.credit_limit == null ? null : Number(row.credit_limit),
     currencyCode: row.currency_code || "USD",
     isManual: false
   };
@@ -502,7 +506,7 @@ async function handleSnapshot(res, user) {
   }
 
   const accounts = await db`
-    select account_id, institution_name, name, mask, kind, current_balance, available_balance, currency_code
+    select account_id, institution_name, name, mask, kind, current_balance, available_balance, credit_limit, currency_code
     from accounts
     where user_id = ${user.id}
     order by institution_name asc nulls last, name asc

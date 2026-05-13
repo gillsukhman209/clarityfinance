@@ -96,11 +96,14 @@ async function ensureSchema() {
         kind text not null default 'manual',
         current_balance numeric not null default 0,
         available_balance numeric,
+        credit_limit numeric,
         currency_code text not null default 'USD',
         raw jsonb not null default '{}'::jsonb,
         updated_at timestamptz not null default now()
       )
     `;
+
+    await db`alter table accounts add column if not exists credit_limit numeric`;
 
     await db`
       create table if not exists credit_card_liabilities (

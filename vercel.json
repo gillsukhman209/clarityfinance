@@ -22,6 +22,10 @@
       "destination": "/api/plaid/gateway?route=accounts/get"
     },
     {
+      "source": "/api/plaid/liabilities/get",
+      "destination": "/api/plaid/gateway?route=liabilities/get"
+    },
+    {
       "source": "/api/plaid/accounts/remove",
       "destination": "/api/plaid/gateway?route=accounts/remove"
     },
