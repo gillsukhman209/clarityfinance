@@ -641,20 +641,24 @@ private struct CreditCardLiabilityRow: View {
                 }
             }
 
-            if let liability {
-                VStack(spacing: 10) {
-                    CreditDetailLine(title: "Minimum payment", value: amountText(liability.minimumPaymentAmount))
-                    CreditDetailLine(title: "Due date", value: dateText(liability.nextPaymentDueDate))
-                    CreditDetailLine(title: "Last payment", value: amountText(liability.lastPaymentAmount))
-                    CreditDetailLine(title: "Last statement", value: amountText(liability.lastStatementBalance))
-                    CreditDetailLine(title: "APR", value: percentText(liability.aprPercentage))
-                    CreditDetailLine(title: "Status", value: liability.isOverdue == true ? "Overdue" : "Current")
+            if hasPrimaryPaymentDetails {
+                HStack(spacing: 10) {
+                    if let minimumPaymentAmount = liability?.minimumPaymentAmount {
+                        CreditCardQuickStat(
+                            title: "Minimum",
+                            value: MoneyFormat.currency(minimumPaymentAmount),
+                            symbolName: "dollarsign.circle.fill"
+                        )
+                    }
+
+                    if let nextPaymentDueDate = liability?.nextPaymentDueDate {
+                        CreditCardQuickStat(
+                            title: "Due",
+                            value: nextPaymentDueDate.formatted(.dateTime.month(.abbreviated).day()),
+                            symbolName: "calendar"
+                        )
+                    }
                 }
-            } else {
-                Text("Balance is available, but Plaid did not return minimum payment or due date for this card.")
-                    .font(.subheadline)
-                    .foregroundStyle(ClarityColor.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.vertical, 12)
@@ -665,35 +669,56 @@ private struct CreditCardLiabilityRow: View {
     }
 
     private var rowSubtitle: String {
-        var parts = [account.institutionName, cardIdentifier]
-        if let minimumPaymentAmount = liability?.minimumPaymentAmount {
-            parts.append("Min \(MoneyFormat.currency(minimumPaymentAmount))")
-        } else {
-            parts.append("Min not returned")
+        var parts = [account.institutionName]
+        if let cardIdentifier {
+            parts.append(cardIdentifier)
         }
         return parts.joined(separator: " • ")
     }
 
-    private var cardIdentifier: String {
+    private var cardIdentifier: String? {
         guard let mask = account.mask?.trimmingCharacters(in: .whitespacesAndNewlines), !mask.isEmpty else {
-            return "Last 4 not returned"
+            return nil
         }
         return "•••• \(mask)"
     }
 
-    private func amountText(_ amount: Double?) -> String {
-        guard let amount else { return "Not returned" }
-        return MoneyFormat.currency(amount)
+    private var hasPrimaryPaymentDetails: Bool {
+        liability?.minimumPaymentAmount != nil || liability?.nextPaymentDueDate != nil
     }
+}
 
-    private func dateText(_ date: Date?) -> String {
-        guard let date else { return "Not returned" }
-        return date.formatted(.dateTime.month(.abbreviated).day().year())
-    }
+private struct CreditCardQuickStat: View {
+    var title: String
+    var value: String
+    var symbolName: String
 
-    private func percentText(_ percent: Double?) -> String {
-        guard let percent else { return "Not returned" }
-        return "\(percent.formatted(.number.precision(.fractionLength(2))))%"
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: symbolName)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(ClarityColor.secondaryText)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(ClarityColor.mutedText)
+                    .textCase(.uppercase)
+
+                Text(value)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(ClarityColor.primaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(ClarityColor.panelElevated)
+        )
     }
 }
 
@@ -716,9 +741,11 @@ private struct CreditCardDetailView: View {
                                 .foregroundStyle(ClarityColor.primaryText)
                                 .lineLimit(2)
 
-                            Text("\(account.institutionName) • \(cardIdentifier)")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(ClarityColor.secondaryText)
+                            if !headerSubtitle.isEmpty {
+                                Text(headerSubtitle)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(ClarityColor.secondaryText)
+                            }
                         }
 
                         Text(MoneyFormat.currency(account.currentBalance))
@@ -731,55 +758,17 @@ private struct CreditCardDetailView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .clarityCard(radius: 20)
 
-                    VStack(spacing: 0) {
-                        CreditDetailLine(title: "Institution", value: account.institutionName)
-                        CreditRowDivider()
-                        CreditDetailLine(title: "Card name", value: account.name)
-                        CreditRowDivider()
-                        CreditDetailLine(title: "Last 4", value: account.mask?.isEmpty == false ? account.mask! : "Not returned by Plaid")
-                        CreditRowDivider()
-                        CreditDetailLine(title: "Balance", value: MoneyFormat.currency(account.currentBalance))
-                        CreditRowDivider()
-                        CreditDetailLine(title: "Available credit", value: amountText(account.availableBalance))
-                        CreditRowDivider()
-                        CreditDetailLine(title: "Credit limit", value: amountText(account.creditLimit))
-                        CreditRowDivider()
-                        CreditDetailLine(title: "Utilization", value: utilizationText)
-                        CreditRowDivider()
-                        CreditDetailLine(title: "Source", value: account.isManual ? "PDF import" : "Plaid")
-                    }
-                    .padding(18)
-                    .clarityCard(radius: 20)
+                    CreditDetailList(rows: accountDetailRows)
 
-                    if let liability {
-                        VStack(spacing: 0) {
-                            CreditDetailLine(title: "Minimum payment", value: amountText(liability.minimumPaymentAmount))
-                            CreditRowDivider()
-                            CreditDetailLine(title: "Due date", value: dateText(liability.nextPaymentDueDate))
-                            CreditRowDivider()
-                            CreditDetailLine(title: "Last payment", value: amountText(liability.lastPaymentAmount))
-                            CreditRowDivider()
-                            CreditDetailLine(title: "Last paid", value: dateText(liability.lastPaymentDate))
-                            CreditRowDivider()
-                            CreditDetailLine(title: "Last statement", value: amountText(liability.lastStatementBalance))
-                            CreditRowDivider()
-                            CreditDetailLine(title: "Statement date", value: dateText(liability.lastStatementIssueDate))
-                            CreditRowDivider()
-                            CreditDetailLine(title: "APR", value: percentText(liability.aprPercentage))
-                            CreditRowDivider()
-                            CreditDetailLine(title: "Status", value: liability.isOverdue == true ? "Overdue" : "Current")
-                            CreditRowDivider()
-                            CreditDetailLine(title: "Updated", value: dateTimeText(liability.updatedAt))
-                        }
-                        .padding(18)
-                        .clarityCard(radius: 20)
-                    } else {
+                    if !paymentDetailRows.isEmpty {
+                        CreditDetailList(rows: paymentDetailRows)
+                    } else if liability == nil {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Payment details unavailable")
                                 .font(.headline.weight(.bold))
                                 .foregroundStyle(ClarityColor.primaryText)
 
-                            Text("Plaid returned this card balance, but not a Liabilities row for minimum payment, due date, APR, or statement data. That usually means this specific card or bank connection does not expose those details yet. Try Refresh card details, or reconnect the bank and make sure credit card permissions are selected.")
+                            Text("Plaid returned the card balance, but not payment details for this card yet. Try Refresh card details, or reconnect the bank and make sure credit card permissions are selected.")
                                 .font(.subheadline)
                                 .foregroundStyle(ClarityColor.secondaryText)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -804,45 +793,122 @@ private struct CreditCardDetailView: View {
         }
     }
 
-    private var cardIdentifier: String {
+    private var headerSubtitle: String {
+        [account.institutionName, cardIdentifier ?? ""]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " • ")
+    }
+
+    private var cardIdentifier: String? {
         guard let mask = account.mask?.trimmingCharacters(in: .whitespacesAndNewlines), !mask.isEmpty else {
-            return "Last 4 not returned"
+            return nil
         }
         return "•••• \(mask)"
     }
 
-    private var utilizationText: String {
-        guard let limit = account.creditLimit, limit > 0 else { return "Not returned" }
+    private var accountDetailRows: [(title: String, value: String)] {
+        var rows: [(title: String, value: String)] = [
+            ("Institution", account.institutionName),
+            ("Card name", account.name),
+            ("Balance", MoneyFormat.currency(account.currentBalance))
+        ]
+
+        if let mask = account.mask?.trimmingCharacters(in: .whitespacesAndNewlines), !mask.isEmpty {
+            rows.append(("Last 4", mask))
+        }
+
+        if let availableBalance = account.availableBalance {
+            rows.append(("Available credit", MoneyFormat.currency(availableBalance)))
+        }
+
+        if let creditLimit = account.creditLimit {
+            rows.append(("Credit limit", MoneyFormat.currency(creditLimit)))
+        }
+
+        if let utilizationText {
+            rows.append(("Utilization", utilizationText))
+        }
+
+        rows.append(("Source", account.isManual ? "PDF import" : "Plaid"))
+        return rows
+    }
+
+    private var paymentDetailRows: [(title: String, value: String)] {
+        guard let liability else { return [] }
+        var rows: [(title: String, value: String)] = []
+
+        if let minimumPaymentAmount = liability.minimumPaymentAmount {
+            rows.append(("Minimum payment", MoneyFormat.currency(minimumPaymentAmount)))
+        }
+
+        if let nextPaymentDueDate = liability.nextPaymentDueDate {
+            rows.append(("Due date", dateText(nextPaymentDueDate)))
+        }
+
+        if let lastPaymentAmount = liability.lastPaymentAmount {
+            rows.append(("Last payment", MoneyFormat.currency(lastPaymentAmount)))
+        }
+
+        if let lastPaymentDate = liability.lastPaymentDate {
+            rows.append(("Last paid", dateText(lastPaymentDate)))
+        }
+
+        if let lastStatementBalance = liability.lastStatementBalance {
+            rows.append(("Last statement", MoneyFormat.currency(lastStatementBalance)))
+        }
+
+        if let lastStatementIssueDate = liability.lastStatementIssueDate {
+            rows.append(("Statement date", dateText(lastStatementIssueDate)))
+        }
+
+        if let aprPercentage = liability.aprPercentage {
+            rows.append(("APR", "\(aprPercentage.formatted(.number.precision(.fractionLength(2))))%"))
+        }
+
+        if let isOverdue = liability.isOverdue {
+            rows.append(("Status", isOverdue ? "Overdue" : "Current"))
+        }
+
+        if let updatedAt = liability.updatedAt {
+            rows.append(("Updated", dateTimeText(updatedAt)))
+        }
+
+        return rows
+    }
+
+    private var utilizationText: String? {
+        guard let limit = account.creditLimit, limit > 0 else { return nil }
         let utilization = max(0, account.currentBalance) / limit
         return utilization.formatted(.percent.precision(.fractionLength(1)))
     }
 
-    private func amountText(_ amount: Double?) -> String {
-        guard let amount else { return "Not returned" }
-        return MoneyFormat.currency(amount)
-    }
-
-    private func dateText(_ date: Date?) -> String {
-        guard let date else { return "Not returned" }
+    private func dateText(_ date: Date) -> String {
         return date.formatted(.dateTime.month(.abbreviated).day().year())
     }
 
-    private func dateTimeText(_ date: Date?) -> String {
-        guard let date else { return "Not returned" }
+    private func dateTimeText(_ date: Date) -> String {
         return date.formatted(.dateTime.month(.abbreviated).day().year().hour().minute())
-    }
-
-    private func percentText(_ percent: Double?) -> String {
-        guard let percent else { return "Not returned" }
-        return "\(percent.formatted(.number.precision(.fractionLength(2))))%"
     }
 }
 
-private struct CreditRowDivider: View {
+private struct CreditDetailList: View {
+    var rows: [(title: String, value: String)]
+
     var body: some View {
-        Divider()
-            .overlay(ClarityColor.stroke)
-            .padding(.vertical, 10)
+        VStack(spacing: 0) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                CreditDetailLine(title: row.title, value: row.value)
+
+                if index < rows.count - 1 {
+                    Divider()
+                        .overlay(ClarityColor.stroke)
+                        .padding(.vertical, 10)
+                }
+            }
+        }
+        .padding(18)
+        .clarityCard(radius: 20)
     }
 }
 
