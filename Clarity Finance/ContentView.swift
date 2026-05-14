@@ -1424,6 +1424,15 @@ private struct PaymentReminderOverviewCard: View {
                 }
             }
 
+            Button {
+                Task { await store.sendTestPaymentReminder() }
+            } label: {
+                Label("Test in 10 seconds", systemImage: "paperplane.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(SecondaryClarityButtonStyle())
+            .disabled(store.isPaymentReminderActionRunning)
+
             if let message = store.paymentReminderStatusMessage {
                 StatusBanner(message: message, isError: false)
             }

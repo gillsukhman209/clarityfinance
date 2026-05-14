@@ -841,6 +841,31 @@ final class FinanceStore {
         }
     }
 
+    func sendTestPaymentReminder() async {
+        recordDiagnostic("Test payment reminder tapped.")
+        isPaymentReminderActionRunning = true
+        paymentReminderStatusMessage = "Scheduling test reminder..."
+        paymentReminderErrorMessage = nil
+        defer { isPaymentReminderActionRunning = false }
+
+        do {
+            try await PaymentReminderService.scheduleTestPaymentReminder(
+                accounts: data.accounts,
+                liabilities: data.creditCardLiabilities
+            )
+            paymentReminderStatusMessage = "Test reminder scheduled. It should arrive in about 10 seconds."
+            paymentReminderErrorMessage = nil
+            recordDiagnostic("Test payment reminder scheduled.")
+        } catch {
+            if error is PaymentReminderError {
+                paymentReminderPreferences.isEnabled = false
+            }
+            paymentReminderStatusMessage = nil
+            paymentReminderErrorMessage = error.localizedDescription
+            recordDiagnostic("Test payment reminder failed: \(error.localizedDescription)")
+        }
+    }
+
     func saveCredentials(clientID: String, sandboxSecret: String, productionSecret: String, linkCustomizationName: String) {
         recordDiagnostic("Saving credentials. clientID set=\(!clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), sandbox secret set=\(!sandboxSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), production secret set=\(!productionSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), link customization set=\(!linkCustomizationName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).")
 

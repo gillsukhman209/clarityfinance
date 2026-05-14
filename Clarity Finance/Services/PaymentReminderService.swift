@@ -171,6 +171,45 @@ enum PaymentReminderService {
         )
     }
 
+    static func scheduleTestPaymentReminder(accounts: [FinancialAccount], liabilities: [CreditCardLiability]) async throws {
+        guard try await requestAuthorizationIfNeeded() else {
+            throw PaymentReminderError.permissionDenied
+        }
+
+        let accountsByID = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0) })
+        let liability = liabilities
+            .filter { accountsByID[$0.accountID] != nil }
+            .sorted { lhs, rhs in
+                (lhs.nextPaymentDueDate ?? .distantFuture) < (rhs.nextPaymentDueDate ?? .distantFuture)
+            }
+            .first
+        let account = liability.flatMap { accountsByID[$0.accountID] } ?? accounts.first { $0.kind == .creditCard }
+
+        let content = UNMutableNotificationContent()
+        content.title = "Payment reminder test"
+
+        if let account, let liability {
+            let label = cardLabel(for: account)
+            if let amount = liability.minimumPaymentAmount {
+                content.body = "\(label): test alert. Real reminder would say minimum \(MoneyFormat.currency(amount)) is due soon."
+            } else {
+                content.body = "\(label): test alert. Real reminder would use the card due date when Plaid returns it."
+            }
+        } else {
+            content.body = "This is what a Clarity card payment reminder will look like."
+        }
+
+        content.sound = .default
+        content.userInfo = ["type": "payment_reminder_test"]
+
+        let request = UNNotificationRequest(
+            identifier: "\(notificationIDPrefix)test:\(UUID().uuidString)",
+            content: content,
+            trigger: UNTimeIntervalNotificationTrigger(timeInterval: 10, repeats: false)
+        )
+        try await UNUserNotificationCenter.current().add(request)
+    }
+
     private static func title(for offset: Int) -> String {
         switch offset {
         case 0:
@@ -218,5 +257,7 @@ enum PaymentReminderService {
     ) async throws -> PaymentReminderScheduleResult {
         PaymentReminderScheduleResult(scheduledCount: 0, skippedPaidCount: 0, missingDueDateCount: 0)
     }
+
+    static func scheduleTestPaymentReminder(accounts: [FinancialAccount], liabilities: [CreditCardLiability]) async throws {}
     #endif
 }
