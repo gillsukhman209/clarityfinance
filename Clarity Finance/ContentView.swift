@@ -90,20 +90,10 @@ private struct TodayTab: View {
     @Environment(\.colorScheme) private var colorScheme
 
     @Bindable var store: FinanceStore
-    @State private var selectedTransaction: FinanceTransaction?
 
     var body: some View {
         ScreenScroll {
             todayBalanceView
-            latestPreviewCard
-        }
-        .sheet(item: $selectedTransaction) { transaction in
-            TransactionDetailView(
-                transaction: transaction,
-                account: store.account(for: transaction.accountID),
-                classification: store.classification(for: transaction),
-                merchantHistory: store.merchantHistory(for: transaction)
-            )
         }
         .refreshable {
             guard !store.data.connections.isEmpty else { return }
@@ -143,7 +133,7 @@ private struct TodayTab: View {
                 Image(colorScheme == .dark ? "hourglass_dark" : "hourglass")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 232, height: 258)
+                    .frame(width: 292, height: 326)
                     .accessibilityHidden(true)
                     .shadow(color: Color.black.opacity(0.08), radius: 24, x: 0, y: 18)
                     .frame(maxWidth: .infinity)
@@ -167,12 +157,10 @@ private struct TodayTab: View {
                 }
             }
 
-            VStack(spacing: 0) {
-                TodayBalanceMetricRow(title: "Income", amount: store.incomeThisMonth, tone: .positive)
-                Divider().overlay(ClarityColor.stroke)
-                TodayBalanceMetricRow(title: "Expenses", amount: store.monthlySpend, tone: .negative)
-                Divider().overlay(ClarityColor.stroke)
-                TodayBalanceMetricRow(title: "Saved", amount: savedThisMonth, tone: .neutral)
+            HStack(spacing: 10) {
+                SpendingStatCard(title: "Today", amount: store.spendingToday)
+                SpendingStatCard(title: "This week", amount: store.spendingThisWeek)
+                SpendingStatCard(title: "This month", amount: store.spendingThisMonth)
             }
         }
         .padding(.top, 6)
@@ -200,41 +188,6 @@ private struct TodayTab: View {
         }
 
         return "Your money is quiet right now."
-    }
-
-    private var latestPreviewCard: some View {
-        let recentTransactions = Array(store.recentTransactions.prefix(5))
-
-        return VStack(alignment: .leading, spacing: 12) {
-            SectionHeader(title: "Latest", systemImage: "clock.fill")
-
-            if recentTransactions.isEmpty {
-                EmptyStateView(
-                    title: "No transactions",
-                    message: "Connect a bank in Settings, then refresh.",
-                    symbolName: "receipt"
-                )
-            } else {
-                ForEach(recentTransactions) { transaction in
-                    Button {
-                        selectedTransaction = transaction
-                    } label: {
-                        SimpleTransactionRow(
-                            transaction: transaction,
-                            classification: store.classification(for: transaction),
-                            account: store.account(for: transaction.accountID)
-                        )
-                    }
-                    .buttonStyle(.plain)
-
-                    if transaction.id != recentTransactions.last?.id {
-                        Divider()
-                    }
-                }
-            }
-        }
-        .padding(18)
-        .clarityCard(radius: 20)
     }
 }
 
