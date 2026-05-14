@@ -511,6 +511,8 @@ private struct CreditCardsTab: View {
                 CreditMissingDetailsCard(insights: cardInsights)
             }
 
+            PaymentReminderOverviewCard(store: store, cardCount: creditAccounts.count, dueDateCount: dataLiabilityDueDateCount)
+
             VStack(alignment: .leading, spacing: 12) {
                 SectionHeader(title: "Payment details", systemImage: "calendar")
 
@@ -549,6 +551,7 @@ private struct CreditCardsTab: View {
         }
         .sheet(item: $selectedCard) { account in
             CreditCardDetailView(
+                store: store,
                 account: account,
                 liability: creditCardLiability(for: account.id)
             )
@@ -583,6 +586,10 @@ private struct CreditCardsTab: View {
         }
 
         return "\(cardsWithMinimumPayment)/\(creditAccounts.count) minimums returned"
+    }
+
+    private var dataLiabilityDueDateCount: Int {
+        creditAccounts.filter { creditCardLiability(for: $0.id)?.nextPaymentDueDate != nil }.count
     }
 
     private func deduplicatedCreditAccounts(from accounts: [FinancialAccount]) -> [FinancialAccount] {
@@ -1361,6 +1368,113 @@ private struct CreditCardQuickStat: View {
     }
 }
 
+private struct PaymentReminderOverviewCard: View {
+    @Bindable var store: FinanceStore
+    var cardCount: Int
+    var dueDateCount: Int
+
+    private let availableOffsets = [3, 1, 0]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                SectionHeader(title: "Payment reminders", systemImage: "bell.badge.fill")
+
+                Spacer()
+
+                Toggle("", isOn: Binding(
+                    get: { store.paymentReminderPreferences.isEnabled },
+                    set: { store.setPaymentRemindersEnabled($0) }
+                ))
+                .labelsHidden()
+            }
+
+            Text(reminderSummary)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(ClarityColor.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                ForEach(availableOffsets, id: \.self) { offset in
+                    Button {
+                        toggleOffset(offset)
+                    } label: {
+                        Text(label(for: offset))
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(isSelected(offset) ? ClarityColor.primaryButtonText : ClarityColor.primaryText)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(
+                                Capsule(style: .continuous)
+                                    .fill(isSelected(offset) ? ClarityColor.primaryText : ClarityColor.panelElevated)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .disabled(!store.paymentReminderPreferences.isEnabled)
+            .opacity(store.paymentReminderPreferences.isEnabled ? 1 : 0.45)
+
+            if store.isPaymentReminderActionRunning {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Updating reminders...")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(ClarityColor.secondaryText)
+                }
+            }
+
+            if let message = store.paymentReminderStatusMessage {
+                StatusBanner(message: message, isError: false)
+            }
+
+            if let message = store.paymentReminderErrorMessage {
+                StatusBanner(message: message, isError: true)
+            }
+        }
+        .padding(18)
+        .clarityCard(radius: 20)
+    }
+
+    private var reminderSummary: String {
+        if cardCount == 0 {
+            return "Connect cards first. Clarity can remind you before minimum payments are due."
+        }
+
+        if dueDateCount == 0 {
+            return "Your cards are here, but Plaid has not returned due dates yet. Reminders will schedule once due dates arrive."
+        }
+
+        return "Clarity will remind you at 9 AM before card due dates. Mark a card paid after you pay so the current due date stops nagging you."
+    }
+
+    private func label(for offset: Int) -> String {
+        switch offset {
+        case 0:
+            return "Due day"
+        case 1:
+            return "1 day"
+        default:
+            return "\(offset) days"
+        }
+    }
+
+    private func isSelected(_ offset: Int) -> Bool {
+        store.paymentReminderPreferences.reminderOffsetsDays.contains(offset)
+    }
+
+    private func toggleOffset(_ offset: Int) {
+        var offsets = Set(store.paymentReminderPreferences.reminderOffsetsDays)
+        if offsets.contains(offset) {
+            offsets.remove(offset)
+        } else {
+            offsets.insert(offset)
+        }
+
+        store.updatePaymentReminderOffsets(Array(offsets))
+    }
+}
+
 private struct CreditUtilizationBar: View {
     var utilization: Double
     var tier: CreditUtilizationTier
@@ -1443,9 +1557,113 @@ private struct CreditCardMeaningCard: View {
     }
 }
 
+private struct PaymentReminderCard: View {
+    @Bindable var store: FinanceStore
+    var account: FinancialAccount
+    var liability: CreditCardLiability?
+
+    private var isPaid: Bool {
+        store.isCardPaymentMarkedPaid(accountID: account.id)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(title: "Reminder", systemImage: "bell.badge.fill")
+
+            if let dueDate = liability?.nextPaymentDueDate {
+                HStack(alignment: .top, spacing: 12) {
+                    IconBadge(symbolName: isPaid ? "checkmark.circle.fill" : "calendar.badge.clock", tint: isPaid ? ClarityColor.green : ClarityColor.orange)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(isPaid ? "Paid for this due date" : "Do not miss this one")
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(ClarityColor.primaryText)
+
+                        Text(reminderCopy(dueDate: dueDate))
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(ClarityColor.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                HStack(spacing: 10) {
+                    Button {
+                        if store.paymentReminderPreferences.isEnabled {
+                            Task { await store.syncPaymentReminders() }
+                        } else {
+                            store.setPaymentRemindersEnabled(true)
+                        }
+                    } label: {
+                        Label(store.paymentReminderPreferences.isEnabled ? "Reschedule" : "Turn on", systemImage: "bell.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(SecondaryClarityButtonStyle())
+                    .disabled(store.isPaymentReminderActionRunning)
+
+                    Button {
+                        if isPaid {
+                            store.resetCardPaymentReminder(accountID: account.id)
+                        } else {
+                            store.markCardPaymentPaid(accountID: account.id)
+                        }
+                    } label: {
+                        Label(isPaid ? "Reset" : "Mark paid", systemImage: isPaid ? "arrow.counterclockwise" : "checkmark")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(SecondaryClarityButtonStyle())
+                    .disabled(store.isPaymentReminderActionRunning)
+                }
+            } else {
+                HStack(alignment: .top, spacing: 12) {
+                    IconBadge(symbolName: "questionmark.circle.fill", tint: ClarityColor.secondaryText)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("No due date yet")
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(ClarityColor.primaryText)
+
+                        Text("Clarity can only schedule a reminder when Plaid returns a due date for this card. Try refreshing card details after the next statement posts.")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(ClarityColor.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+
+            if let message = store.paymentReminderErrorMessage {
+                StatusBanner(message: message, isError: true)
+            }
+        }
+        .padding(18)
+        .clarityCard(radius: 20)
+    }
+
+    private func reminderCopy(dueDate: Date) -> String {
+        let dateText = dueDate.formatted(.dateTime.month(.abbreviated).day().year())
+        let amount = liability?.minimumPaymentAmount.map { MoneyFormat.currency($0) }
+        let offsetText = store.paymentReminderPreferences.reminderOffsetsDays
+            .sorted(by: >)
+            .map { offset in
+                switch offset {
+                case 0: "due day"
+                case 1: "1 day before"
+                default: "\(offset) days before"
+                }
+            }
+            .joined(separator: ", ")
+
+        if let amount {
+            return "Minimum \(amount) is due \(dateText). Alerts: \(offsetText.isEmpty ? "default" : offsetText)."
+        }
+
+        return "Payment is due \(dateText). Alerts: \(offsetText.isEmpty ? "default" : offsetText)."
+    }
+}
+
 private struct CreditCardDetailView: View {
     @Environment(\.dismiss) private var dismiss
 
+    @Bindable var store: FinanceStore
     var account: FinancialAccount
     var liability: CreditCardLiability?
 
@@ -1505,6 +1723,8 @@ private struct CreditCardDetailView: View {
                         .padding(18)
                         .clarityCard(radius: 20)
                     }
+
+                    PaymentReminderCard(store: store, account: account, liability: liability)
 
                     CreditDetailList(rows: accountDetailRows)
 

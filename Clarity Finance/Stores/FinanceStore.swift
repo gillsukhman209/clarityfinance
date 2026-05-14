@@ -25,6 +25,14 @@ final class FinanceStore {
     var notificationErrorMessage: String?
     var notificationPermissionStatus = "unknown"
     var isNotificationActionRunning = false
+    var paymentReminderPreferences: PaymentReminderPreferences {
+        didSet {
+            savePaymentReminderPreferences()
+        }
+    }
+    var paymentReminderStatusMessage: String?
+    var paymentReminderErrorMessage: String?
+    var isPaymentReminderActionRunning = false
     var authSession: SupabaseAuthSession?
     var authStatusMessage: String?
     var authErrorMessage: String?
@@ -52,6 +60,7 @@ final class FinanceStore {
             linkCustomizationName: (try? KeychainStore.read(account: "plaid-link-customization-name")) ?? PlaidCredentials.bundledSandbox.linkCustomizationName
         )
         viralNotificationPreferences = Self.loadViralNotificationPreferences()
+        paymentReminderPreferences = Self.loadPaymentReminderPreferences()
         notificationDeviceID = Self.loadNotificationDeviceID()
         authSession = Self.loadSavedAuthSession()
 
@@ -734,6 +743,104 @@ final class FinanceStore {
         }
     }
 
+    func setPaymentRemindersEnabled(_ isEnabled: Bool) {
+        recordDiagnostic("Payment reminders toggle changed to \(isEnabled).")
+        paymentReminderPreferences.isEnabled = isEnabled
+        paymentReminderStatusMessage = isEnabled ? "Setting up card payment reminders..." : "Payment reminders are off."
+        paymentReminderErrorMessage = nil
+
+        Task {
+            if isEnabled {
+                await syncPaymentReminders()
+            } else {
+                await PaymentReminderService.cancelAllPendingPaymentReminders()
+            }
+        }
+    }
+
+    func updatePaymentReminderOffsets(_ offsets: [Int]) {
+        let cleanedOffsets = Array(Set(offsets)).filter { $0 >= 0 }.sorted(by: >)
+        paymentReminderPreferences.reminderOffsetsDays = cleanedOffsets.isEmpty ? PaymentReminderPreferences.defaults.reminderOffsetsDays : cleanedOffsets
+        recordDiagnostic("Payment reminder offsets changed to \(paymentReminderPreferences.reminderOffsetsDays).")
+
+        Task {
+            await syncPaymentReminders()
+        }
+    }
+
+    func markCardPaymentPaid(accountID: String) {
+        guard let dueDate = creditCardLiability(for: accountID)?.nextPaymentDueDate else {
+            paymentReminderErrorMessage = "This card does not have a due date yet."
+            recordDiagnostic("Mark paid stopped: no due date for accountID=\(accountID).")
+            return
+        }
+
+        let dueDateKey = PaymentReminderService.dueDateKey(dueDate)
+        paymentReminderPreferences.paidDueDateKeysByAccountID[accountID] = dueDateKey
+        paymentReminderStatusMessage = "Marked this due date as paid."
+        paymentReminderErrorMessage = nil
+        recordDiagnostic("Marked card payment paid for accountID=\(accountID), dueDate=\(dueDateKey).")
+
+        Task {
+            await PaymentReminderService.cancelPendingPaymentReminders(accountID: accountID)
+            await syncPaymentReminders()
+        }
+    }
+
+    func resetCardPaymentReminder(accountID: String) {
+        paymentReminderPreferences.paidDueDateKeysByAccountID.removeValue(forKey: accountID)
+        paymentReminderStatusMessage = "Reminder reset for this card."
+        paymentReminderErrorMessage = nil
+        recordDiagnostic("Reset card payment reminder for accountID=\(accountID).")
+
+        Task {
+            await syncPaymentReminders()
+        }
+    }
+
+    func isCardPaymentMarkedPaid(accountID: String) -> Bool {
+        guard let dueDate = creditCardLiability(for: accountID)?.nextPaymentDueDate else {
+            return false
+        }
+
+        return paymentReminderPreferences.paidDueDateKeysByAccountID[accountID] == PaymentReminderService.dueDateKey(dueDate)
+    }
+
+    func syncPaymentReminders() async {
+        guard paymentReminderPreferences.isEnabled else {
+            await PaymentReminderService.cancelAllPendingPaymentReminders()
+            return
+        }
+
+        isPaymentReminderActionRunning = true
+        defer { isPaymentReminderActionRunning = false }
+
+        do {
+            let result = try await PaymentReminderService.syncPaymentReminders(
+                accounts: data.accounts,
+                liabilities: data.creditCardLiabilities,
+                preferences: paymentReminderPreferences
+            )
+
+            paymentReminderErrorMessage = nil
+            if result.scheduledCount == 0 {
+                paymentReminderStatusMessage = result.missingDueDateCount > 0
+                    ? "No reminders scheduled because due dates are missing."
+                    : "No future card reminders to schedule yet."
+            } else {
+                paymentReminderStatusMessage = "Scheduled \(result.scheduledCount) payment reminder\(result.scheduledCount == 1 ? "" : "s")."
+            }
+            recordDiagnostic("Payment reminders synced. scheduled=\(result.scheduledCount), paidSkipped=\(result.skippedPaidCount), missingDueDate=\(result.missingDueDateCount).")
+        } catch {
+            if error is PaymentReminderError {
+                paymentReminderPreferences.isEnabled = false
+            }
+            paymentReminderStatusMessage = nil
+            paymentReminderErrorMessage = error.localizedDescription
+            recordDiagnostic("Payment reminder sync failed: \(error.localizedDescription)")
+        }
+    }
+
     func saveCredentials(clientID: String, sandboxSecret: String, productionSecret: String, linkCustomizationName: String) {
         recordDiagnostic("Saving credentials. clientID set=\(!clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), sandbox secret set=\(!sandboxSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), production secret set=\(!productionSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty), link customization set=\(!linkCustomizationName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).")
 
@@ -1258,6 +1365,8 @@ final class FinanceStore {
     }
 
     private func upsert(creditCardLiabilities liabilities: [CreditCardLiability]) {
+        var didChangeLiabilities = false
+
         for liability in liabilities {
             guard !data.removedAccountIDs.contains(liability.accountID) else {
                 continue
@@ -1267,6 +1376,13 @@ final class FinanceStore {
                 data.creditCardLiabilities[index] = liability
             } else {
                 data.creditCardLiabilities.append(liability)
+            }
+            didChangeLiabilities = true
+        }
+
+        if didChangeLiabilities, paymentReminderPreferences.isEnabled {
+            Task {
+                await syncPaymentReminders()
             }
         }
     }
@@ -1305,6 +1421,7 @@ final class FinanceStore {
         data.creditCardLiabilities.removeAll { $0.accountID == accountID }
         data.netWorthSnapshots = []
         selectedAccountIDs.remove(accountID)
+        paymentReminderPreferences.paidDueDateKeysByAccountID.removeValue(forKey: accountID)
 
         rebuildDerivedData()
         save()
@@ -1314,6 +1431,10 @@ final class FinanceStore {
         statusMessage = "Removed \(displayName) and \(removedTransactions) linked transaction(s)."
         lastErrorMessage = nil
         recordDiagnostic("Removed account id=\(accountID), accountsRemoved=\(removedAccounts), transactionsRemoved=\(removedTransactions).")
+        Task {
+            await PaymentReminderService.cancelPendingPaymentReminders(accountID: accountID)
+            await syncPaymentReminders()
+        }
     }
 
     private func aiClassificationInputs(onlyMissing: Bool) -> [AIClassificationInput] {
@@ -2305,6 +2426,20 @@ final class FinanceStore {
     private static func loadViralNotificationPreferences() -> ViralNotificationPreferences {
         guard let data = UserDefaults.standard.data(forKey: "viral-notification-preferences"),
               let decoded = try? JSONDecoder.store.decode(ViralNotificationPreferences.self, from: data) else {
+            return .defaults
+        }
+        return decoded
+    }
+
+    private func savePaymentReminderPreferences() {
+        if let encoded = try? JSONEncoder.store.encode(paymentReminderPreferences) {
+            UserDefaults.standard.set(encoded, forKey: "payment-reminder-preferences")
+        }
+    }
+
+    private static func loadPaymentReminderPreferences() -> PaymentReminderPreferences {
+        guard let data = UserDefaults.standard.data(forKey: "payment-reminder-preferences"),
+              let decoded = try? JSONDecoder.store.decode(PaymentReminderPreferences.self, from: data) else {
             return .defaults
         }
         return decoded
