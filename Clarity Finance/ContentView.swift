@@ -15,7 +15,7 @@ struct ContentView: View {
     @State private var selectedTab: ClarityTab = .today
     @State private var plaidWebSession: PlaidWebSession?
     @State private var isImportingStatement = false
-    @State private var showsDiagnostics = false
+    @State private var showsDebugMenu = false
 
     private var selectedAppearance: ClarityAppearance {
         ClarityAppearance(rawValue: appearanceRawValue) ?? .light
@@ -47,7 +47,7 @@ struct ContentView: View {
                 store: store,
                 plaidWebSession: $plaidWebSession,
                 isImportingStatement: $isImportingStatement,
-                showsDiagnostics: $showsDiagnostics,
+                showsDebugMenu: $showsDebugMenu,
                 appearanceRawValue: $appearanceRawValue
             )
             .tabItem { Label("Settings", systemImage: "gearshape.fill") }
@@ -463,8 +463,6 @@ private struct CreditCardsTab: View {
                 CreditPayoffOrderCard(insights: cardInsights)
                 CreditMissingDetailsCard(insights: cardInsights)
             }
-
-            PaymentReminderOverviewCard(store: store, cardCount: creditAccounts.count, dueDateCount: dataLiabilityDueDateCount)
 
             VStack(alignment: .leading, spacing: 12) {
                 SectionHeader(title: "Payment details", systemImage: "calendar")
@@ -1325,6 +1323,7 @@ private struct PaymentReminderOverviewCard: View {
     @Bindable var store: FinanceStore
     var cardCount: Int
     var dueDateCount: Int
+    var showsTestButton = false
 
     private let availableOffsets = [3, 1, 0]
 
@@ -1377,14 +1376,16 @@ private struct PaymentReminderOverviewCard: View {
                 }
             }
 
-            Button {
-                Task { await store.sendTestPaymentReminder() }
-            } label: {
-                Label("Test in 10 seconds", systemImage: "paperplane.fill")
-                    .frame(maxWidth: .infinity)
+            if showsTestButton {
+                Button {
+                    Task { await store.sendTestPaymentReminder() }
+                } label: {
+                    Label("Test in 10 seconds", systemImage: "paperplane.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryClarityButtonStyle())
+                .disabled(store.isPaymentReminderActionRunning)
             }
-            .buttonStyle(SecondaryClarityButtonStyle())
-            .disabled(store.isPaymentReminderActionRunning)
 
             if let message = store.paymentReminderStatusMessage {
                 StatusBanner(message: message, isError: false)
@@ -2067,10 +2068,20 @@ private struct SettingsTab: View {
     @Bindable var store: FinanceStore
     @Binding var plaidWebSession: PlaidWebSession?
     @Binding var isImportingStatement: Bool
-    @Binding var showsDiagnostics: Bool
+    @Binding var showsDebugMenu: Bool
     @Binding var appearanceRawValue: String
     @State private var accountPendingRemoval: FinancialAccount?
     @State private var appleSignInNonce: String?
+
+    private var creditAccounts: [FinancialAccount] {
+        store.filteredAccounts.filter { $0.kind == .creditCard }
+    }
+
+    private var creditCardDueDateCount: Int {
+        creditAccounts.filter { account in
+            store.creditCardLiability(for: account.id)?.nextPaymentDueDate != nil
+        }.count
+    }
 
     private var selectedAppearance: ClarityAppearance {
         get {
@@ -2083,16 +2094,18 @@ private struct SettingsTab: View {
 
     var body: some View {
         ScreenScroll {
-            HeaderView(title: "Settings", subtitle: "Connect, import, refresh.")
+            HeaderView(title: "Settings", subtitle: "Account, reminders, and alerts.")
 
             appearanceCard
             authCard
             addAccountCard
-            appleCardAccessCard
+            paymentRemindersCard
             notificationsCard
             connectedAccountsCard
-            toolsCard
             statusArea
+            #if DEBUG
+            debugMenu
+            #endif
         }
         .alert(item: $accountPendingRemoval) { account in
             Alert(
@@ -2150,25 +2163,14 @@ private struct SettingsTab: View {
                     Spacer(minLength: 0)
                 }
 
-                HStack(spacing: 10) {
-                    Button {
-                        Task { await store.verifyCurrentAuthSessionWithBackend() }
-                    } label: {
-                        Label("Check backend", systemImage: "lock.shield.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(SecondaryClarityButtonStyle())
-                    .disabled(store.isAuthActionRunning)
-
-                    Button(role: .destructive) {
-                        store.signOut()
-                    } label: {
-                        Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(SecondaryClarityButtonStyle())
-                    .disabled(store.isAuthActionRunning)
+                Button(role: .destructive) {
+                    store.signOut()
+                } label: {
+                    Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
+                        .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(SecondaryClarityButtonStyle())
+                .disabled(store.isAuthActionRunning)
             } else {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Save your Clarity data to your account.")
@@ -2274,74 +2276,22 @@ private struct SettingsTab: View {
                 .buttonStyle(PrimaryClarityButtonStyle())
                 .disabled(store.isSyncing)
             }
-
-            #if DEBUG
-            HStack(spacing: 10) {
-                Button {
-                    Task { await store.connectSandboxInstitution() }
-                } label: {
-                    Label("Sandbox", systemImage: "testtube.2")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(SecondaryClarityButtonStyle())
-                .disabled(store.isSyncing)
-
-                Button {
-                    isImportingStatement = true
-                } label: {
-                    Label("Apple Card PDFs", systemImage: "doc.badge.plus")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(SecondaryClarityButtonStyle())
-            }
-            #else
-            Button {
-                isImportingStatement = true
-            } label: {
-                Label("Apple Card PDFs", systemImage: "doc.badge.plus")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(SecondaryClarityButtonStyle())
-            #endif
         }
         .padding(18)
         .clarityCard(radius: 20)
     }
 
-    private var appleCardAccessCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionHeader(title: "Apple Card", systemImage: "apple.logo")
-
-            Text("Connect Apple Card directly from Wallet using Apple FinanceKit. This is separate from Plaid and can import balances, transactions, due dates, and minimum payments when Apple allows access.")
-                .font(.subheadline)
-                .foregroundStyle(ClarityColor.secondaryText)
-
-            #if os(iOS)
-            Button {
-                Task { await store.importAppleCardFromWallet() }
-            } label: {
-                Label("Connect Apple Card", systemImage: "wallet.pass.fill")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(SecondaryClarityButtonStyle())
-            .disabled(store.isSyncing)
-
-            Text("Requires iOS 17.4+, Wallet data availability, user permission, and Apple approval for the FinanceKit entitlement.")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(ClarityColor.secondaryText)
-            #else
-            Text("Direct Apple Card access is only available in the iPhone app. On Mac, import Apple Card PDFs instead.")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(ClarityColor.secondaryText)
-            #endif
-        }
-        .padding(18)
-        .clarityCard(radius: 20)
+    private var paymentRemindersCard: some View {
+        PaymentReminderOverviewCard(
+            store: store,
+            cardCount: creditAccounts.count,
+            dueDateCount: creditCardDueDateCount
+        )
     }
 
     private var notificationsCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            SectionHeader(title: "Viral notifications", systemImage: "bell.badge.fill")
+            SectionHeader(title: "Spending alerts", systemImage: "bell.badge.fill")
 
             #if os(iOS)
             Toggle(isOn: Binding(
@@ -2349,74 +2299,13 @@ private struct SettingsTab: View {
                 set: { store.setViralNotificationsEnabled($0) }
             )) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Notify when Plaid finds spending")
+                    Text("Notify when new spending is found")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(ClarityColor.primaryText)
-                    Text("Max 1/day. Merchant and amount are shown by default.")
+                    Text("Clarity can send one daily alert when connected accounts sync new spending.")
                         .font(.caption)
                         .foregroundStyle(ClarityColor.secondaryText)
                 }
-            }
-
-            Picker("Tone", selection: Binding(
-                get: { store.viralNotificationPreferences.tone },
-                set: { store.updateViralNotificationTone($0) }
-            )) {
-                ForEach(ViralNotificationTone.allCases) { tone in
-                    Text(tone.title).tag(tone)
-                }
-            }
-            .pickerStyle(.segmented)
-
-            Picker("Privacy", selection: Binding(
-                get: { store.viralNotificationPreferences.privacy },
-                set: { store.updateViralNotificationPrivacy($0) }
-            )) {
-                ForEach(ViralNotificationPrivacy.allCases) { privacy in
-                    Text(privacy.title).tag(privacy)
-                }
-            }
-            .pickerStyle(.segmented)
-
-            #if DEBUG
-            HStack(spacing: 10) {
-                Button {
-                    Task { await store.registerPlaidItemsWithNotificationBackend() }
-                } label: {
-                    if store.isNotificationActionRunning {
-                        ProgressView()
-                            .frame(maxWidth: .infinity)
-                    } else {
-                        Label("Register Plaid", systemImage: "link.badge.plus")
-                            .frame(maxWidth: .infinity)
-                    }
-                }
-                .buttonStyle(SecondaryClarityButtonStyle())
-                .disabled(!store.viralNotificationPreferences.isEnabled || store.isNotificationActionRunning)
-
-                Button {
-                    Task { await store.sendTestViralNotification() }
-                } label: {
-                    Label("Test", systemImage: "paperplane.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(SecondaryClarityButtonStyle())
-                .disabled(!store.viralNotificationPreferences.isEnabled || store.isNotificationActionRunning)
-            }
-            #endif
-
-            Text(store.apnsDeviceToken == nil ? "APNs token: waiting until notifications are allowed." : "APNs token: ready.")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(ClarityColor.secondaryText)
-
-            Text("Permission: \(store.notificationPermissionStatus)")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(ClarityColor.secondaryText)
-
-            if store.data.connections.isEmpty {
-                Text("No Plaid bank is connected yet. Test can still register this iPhone, but real transaction alerts need a Plaid account.")
-                    .font(.caption)
-                    .foregroundStyle(ClarityColor.secondaryText)
             }
 
             if let notificationStatusMessage = store.notificationStatusMessage {
@@ -2427,7 +2316,7 @@ private struct SettingsTab: View {
                 StatusBanner(message: notificationErrorMessage, isError: true)
             }
             #else
-            Text("Viral push notifications are configured from the iPhone app.")
+            Text("Spending alerts are configured from the iPhone app.")
                 .font(.subheadline)
                 .foregroundStyle(ClarityColor.secondaryText)
             #endif
@@ -2449,7 +2338,7 @@ private struct SettingsTab: View {
             if store.data.accounts.isEmpty {
                 EmptyStateView(
                     title: "No accounts connected",
-                    message: "Connect a bank or import Apple Card PDFs.",
+                    message: "Connect a bank to start tracking balances and spending.",
                     symbolName: "wallet.pass"
                 )
             } else {
@@ -2468,9 +2357,147 @@ private struct SettingsTab: View {
         .clarityCard(radius: 20)
     }
 
-    private var toolsCard: some View {
+    @ViewBuilder
+    private var statusArea: some View {
+        if let statusMessage = store.statusMessage {
+            StatusBanner(message: statusMessage, isError: false)
+        }
+
+        if let lastErrorMessage = store.lastErrorMessage {
+            StatusBanner(message: lastErrorMessage, isError: true)
+        }
+    }
+
+    private var debugMenu: some View {
+        DisclosureGroup("Debug", isExpanded: $showsDebugMenu) {
+            VStack(alignment: .leading, spacing: 16) {
+                debugAccountTools
+                Divider().overlay(ClarityColor.stroke)
+                debugNotificationTools
+                Divider().overlay(ClarityColor.stroke)
+                debugDataTools
+                Divider().overlay(ClarityColor.stroke)
+                debugDiagnosticsTools
+            }
+            .padding(.top, 14)
+        }
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(ClarityColor.primaryText)
+        .padding(16)
+        .clarityCard(radius: 18)
+    }
+
+    private var debugAccountTools: some View {
         VStack(alignment: .leading, spacing: 12) {
-            SectionHeader(title: "Tools", systemImage: "slider.horizontal.3")
+            SectionHeader(title: "Account tools", systemImage: "hammer.fill")
+
+            Button {
+                Task { await store.verifyCurrentAuthSessionWithBackend() }
+            } label: {
+                Label("Check backend auth", systemImage: "lock.shield.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(SecondaryClarityButtonStyle())
+            .disabled(store.isAuthActionRunning || store.authSession == nil)
+
+            HStack(spacing: 10) {
+                Button {
+                    Task { await store.connectSandboxInstitution() }
+                } label: {
+                    Label("Sandbox bank", systemImage: "testtube.2")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryClarityButtonStyle())
+                .disabled(store.isSyncing)
+
+                Button {
+                    isImportingStatement = true
+                } label: {
+                    Label("Apple PDFs", systemImage: "doc.badge.plus")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryClarityButtonStyle())
+            }
+
+            #if os(iOS)
+            Button {
+                Task { await store.importAppleCardFromWallet() }
+            } label: {
+                Label("FinanceKit Apple Card", systemImage: "wallet.pass.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(SecondaryClarityButtonStyle())
+            .disabled(store.isSyncing)
+
+            Text("FinanceKit requires Apple approval and iOS 17.4+.")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ClarityColor.secondaryText)
+            #endif
+        }
+    }
+
+    private var debugNotificationTools: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(title: "Notification tools", systemImage: "bell.and.waves.left.and.right.fill")
+
+            Picker("Tone", selection: Binding(
+                get: { store.viralNotificationPreferences.tone },
+                set: { store.updateViralNotificationTone($0) }
+            )) {
+                ForEach(ViralNotificationTone.allCases) { tone in
+                    Text(tone.title).tag(tone)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Picker("Privacy", selection: Binding(
+                get: { store.viralNotificationPreferences.privacy },
+                set: { store.updateViralNotificationPrivacy($0) }
+            )) {
+                ForEach(ViralNotificationPrivacy.allCases) { privacy in
+                    Text(privacy.title).tag(privacy)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            HStack(spacing: 10) {
+                Button {
+                    Task { await store.registerPlaidItemsWithNotificationBackend() }
+                } label: {
+                    if store.isNotificationActionRunning {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        Label("Register Plaid", systemImage: "link.badge.plus")
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .buttonStyle(SecondaryClarityButtonStyle())
+                .disabled(!store.viralNotificationPreferences.isEnabled || store.isNotificationActionRunning)
+
+                Button {
+                    Task { await store.sendTestViralNotification() }
+                } label: {
+                    Label("Test alert", systemImage: "paperplane.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryClarityButtonStyle())
+                .disabled(!store.viralNotificationPreferences.isEnabled || store.isNotificationActionRunning)
+            }
+
+            Text(store.apnsDeviceToken == nil ? "APNs token: waiting until notifications are allowed." : "APNs token: ready.")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ClarityColor.secondaryText)
+
+            Text("Permission: \(store.notificationPermissionStatus)")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ClarityColor.secondaryText)
+        }
+    }
+
+    private var debugDataTools: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(title: "Data tools", systemImage: "slider.horizontal.3")
 
             Button {
                 Task { await store.syncAllConnections() }
@@ -2490,6 +2517,15 @@ private struct SettingsTab: View {
             .buttonStyle(SecondaryClarityButtonStyle())
             .disabled(store.isAnalyzingSpending || store.data.transactions.isEmpty)
 
+            Button {
+                Task { await store.sendTestPaymentReminder() }
+            } label: {
+                Label("Test payment reminder", systemImage: "calendar.badge.clock")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(SecondaryClarityButtonStyle())
+            .disabled(store.isPaymentReminderActionRunning)
+
             Button(role: .destructive) {
                 store.clearLocalData()
             } label: {
@@ -2498,27 +2534,11 @@ private struct SettingsTab: View {
             }
             .buttonStyle(SecondaryClarityButtonStyle())
         }
-        .padding(18)
-        .clarityCard(radius: 20)
     }
 
-    @ViewBuilder
-    private var statusArea: some View {
-        if let statusMessage = store.statusMessage {
-            StatusBanner(message: statusMessage, isError: false)
-        }
-
-        if let lastErrorMessage = store.lastErrorMessage {
-            StatusBanner(message: lastErrorMessage, isError: true)
-        }
-
-        #if DEBUG
-        diagnosticsDisclosure
-        #endif
-    }
-
-    private var diagnosticsDisclosure: some View {
-        DisclosureGroup("Diagnostics", isExpanded: $showsDiagnostics) {
+    private var debugDiagnosticsTools: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(title: "Diagnostics", systemImage: "stethoscope")
             PlaidDiagnosticsCard(
                 logText: store.diagnosticsText,
                 copy: {
@@ -2527,12 +2547,7 @@ private struct SettingsTab: View {
                 },
                 clear: store.clearDiagnostics
             )
-            .padding(.top, 8)
         }
-        .font(.subheadline.weight(.semibold))
-        .foregroundStyle(ClarityColor.primaryText)
-        .padding(16)
-        .clarityCard(radius: 18)
     }
 
     private func copyDiagnostics(_ text: String) {
